@@ -317,7 +317,7 @@ async fn test_joint_consensus_membership_change_no_split_brain() {
     assert!(leader_id > 0);
 
     // Start Shard 1 replica on node 4 so it's ready to receive replication
-    let peers4: Vec<NodeId> = initial_nodes.iter().cloned().collect();
+    let peers4: Vec<NodeId> = initial_nodes.to_vec();
     servers.get(&4).unwrap().start_shard(ShardId(1), peers4);
 
     let leader_node = servers

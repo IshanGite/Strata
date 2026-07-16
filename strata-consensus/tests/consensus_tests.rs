@@ -548,7 +548,8 @@ async fn test_log_matching_property() {
                 .nodes
                 .get(&l)
                 .unwrap()
-                .propose(format!("k_{},v_{}", i, i).into_bytes());
+                .propose(format!("k_{},v_{}", i, i).into_bytes())
+                .await;
         }
 
         // Apply a random partition
