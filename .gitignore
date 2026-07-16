@@ -1,0 +1,7 @@
+/target/
+**/*.log
+**/*.bin
+.DS_Store
+.gemini/
+.agents/
+/states/

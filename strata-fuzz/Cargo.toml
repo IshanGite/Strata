@@ -1,0 +1,11 @@
+[package]
+name = "strata-fuzz"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+strata-storage = { workspace = true }
+strata-consensus = { workspace = true }
+strata-txn = { workspace = true }
+proptest = { workspace = true }
+serde = { workspace = true }

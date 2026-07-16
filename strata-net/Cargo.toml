@@ -1,0 +1,11 @@
+[package]
+name = "strata-net"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+quinn = { workspace = true }
+serde = { workspace = true }

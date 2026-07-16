@@ -1,0 +1,11 @@
+[package]
+name = "strata-planner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+strata-storage = { workspace = true }
+strata-index = { workspace = true }
+strata-sharding = { workspace = true }
+strata-txn = { workspace = true }
+serde = { workspace = true }

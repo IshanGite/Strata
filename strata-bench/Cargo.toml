@@ -1,0 +1,11 @@
+[package]
+name = "strata-bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+strata-storage = { workspace = true }
+strata-simd = { workspace = true }
+strata-index = { workspace = true }
+criterion = { workspace = true }
+serde = { workspace = true }

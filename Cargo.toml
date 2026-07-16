@@ -1,0 +1,43 @@
+[workspace]
+members = [
+    "strata-storage",
+    "strata-consensus",
+    "strata-sharding",
+    "strata-txn",
+    "strata-simd",
+    "strata-index",
+    "strata-planner",
+    "strata-net",
+    "strata-client",
+    "strata-server",
+    "strata-bench",
+    "strata-fuzz",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+tonic = "0.12"
+prost = "0.13"
+quinn = "0.11"
+proptest = "1"
+criterion = "0.5"
+wasm-bindgen = "0.2"
+crc32fast = "1"
+rand = "0.8"
+bincode = "1"
+roaring = "0.10"
+# All member crates within the workspace can also refer to each other.
+strata-storage = { path = "strata-storage" }
+strata-consensus = { path = "strata-consensus" }
+strata-sharding = { path = "strata-sharding" }
+strata-txn = { path = "strata-txn" }
+strata-simd = { path = "strata-simd" }
+strata-index = { path = "strata-index" }
+strata-planner = { path = "strata-planner" }
+strata-net = { path = "strata-net" }
+strata-client = { path = "strata-client" }
+strata-server = { path = "strata-server" }
+strata-bench = { path = "strata-bench" }
+strata-fuzz = { path = "strata-fuzz" }

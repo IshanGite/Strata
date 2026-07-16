@@ -1,0 +1,7 @@
+[package]
+name = "strata-simd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# strata-simd will be targeting Apple Silicon NEON with a fallback

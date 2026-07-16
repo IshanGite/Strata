@@ -1,0 +1,8 @@
+[package]
+name = "strata-txn"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+strata-storage = { workspace = true }
+serde = { workspace = true }
