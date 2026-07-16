@@ -1,14 +1,14 @@
+use parking_lot::Mutex;
+use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use parking_lot::Mutex;
-use rand::{Rng, SeedableRng};
-use tempfile::TempDir;
 use strata_consensus::{
-    AppendEntriesReq, AppendEntriesResp, InstallSnapshotReq, InstallSnapshotResp,
-    LogEntry, NodeId, RaftNode, RaftTransport, RequestVoteReq, RequestVoteResp,
-    StateMachine, StateMachineError, Role, TransportError,
+    AppendEntriesReq, AppendEntriesResp, InstallSnapshotReq, InstallSnapshotResp, LogEntry, NodeId,
+    RaftNode, RaftTransport, RequestVoteReq, RequestVoteResp, Role, StateMachine,
+    StateMachineError, TransportError,
 };
+use tempfile::TempDir;
 
 // ----------------------------------------------------------------------
 // Simple Key-Value State Machine for Testing
@@ -29,7 +29,10 @@ impl StateMachine for SimpleStateMachine {
             self.db.lock().insert(key, value.clone());
             Ok(value.into_bytes())
         } else {
-            Err(StateMachineError::ApplyFailed(format!("Invalid command: {}", cmd_str)))
+            Err(StateMachineError::ApplyFailed(format!(
+                "Invalid command: {}",
+                cmd_str
+            )))
         }
     }
 
@@ -184,15 +187,21 @@ impl ChaosNetwork {
                             match msg.payload {
                                 NetworkPayload::RequestVote(req) => {
                                     let resp = target_node_clone.handle_request_vote_rpc(req).await;
-                                    let _ = msg.reply_tx.send(Ok(NetworkResponse::RequestVote(resp)));
+                                    let _ =
+                                        msg.reply_tx.send(Ok(NetworkResponse::RequestVote(resp)));
                                 }
                                 NetworkPayload::AppendEntries(req) => {
-                                    let resp = target_node_clone.handle_append_entries_rpc(req).await;
-                                    let _ = msg.reply_tx.send(Ok(NetworkResponse::AppendEntries(resp)));
+                                    let resp =
+                                        target_node_clone.handle_append_entries_rpc(req).await;
+                                    let _ =
+                                        msg.reply_tx.send(Ok(NetworkResponse::AppendEntries(resp)));
                                 }
                                 NetworkPayload::InstallSnapshot(req) => {
-                                    let resp = target_node_clone.handle_install_snapshot_rpc(req).await;
-                                    let _ = msg.reply_tx.send(Ok(NetworkResponse::InstallSnapshot(resp)));
+                                    let resp =
+                                        target_node_clone.handle_install_snapshot_rpc(req).await;
+                                    let _ = msg
+                                        .reply_tx
+                                        .send(Ok(NetworkResponse::InstallSnapshot(resp)));
                                 }
                             }
                         });
@@ -214,7 +223,11 @@ pub struct MockTransport {
 }
 
 impl MockTransport {
-    fn send_payload(&self, to: NodeId, payload: NetworkPayload) -> Result<NetworkResponse, TransportError> {
+    fn send_payload(
+        &self,
+        to: NodeId,
+        payload: NetworkPayload,
+    ) -> Result<NetworkResponse, TransportError> {
         let (tx, rx) = std::sync::mpsc::channel();
         let pending = PendingMsg {
             from: self.node_id,
@@ -291,7 +304,8 @@ impl TestCluster {
                 network: network.clone(),
             });
             let wal_path = temp_dir.path().join(format!("wal_{}.log", id));
-            let node = Arc::new(RaftNode::new(0, id, peers, wal_path, sm.clone(), transport).unwrap());
+            let node =
+                Arc::new(RaftNode::new(0, id, peers, wal_path, sm.clone(), transport).unwrap());
             nodes.insert(id, node.clone());
             sms.insert(id, sm);
         }
@@ -373,7 +387,10 @@ async fn test_election_converges_after_partition_heals() {
     cluster.tick_n(150);
 
     let final_leader = cluster.find_leader();
-    assert!(final_leader.is_some(), "Expected a leader after partition heals");
+    assert!(
+        final_leader.is_some(),
+        "Expected a leader after partition heals"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -394,7 +411,7 @@ async fn test_no_two_leaders_same_term() {
         // Run simulation and assert safety invariant at each step
         for _ in 0..80 {
             cluster.network.lock().tick();
-            
+
             // Invariant: no two leaders in the same term
             let mut terms_with_leaders = HashMap::new();
             for (&id, node) in &cluster.nodes {
@@ -421,7 +438,11 @@ async fn test_no_two_leaders_same_term() {
         }
         cluster.tick_n(100);
         let leader = cluster.find_leader();
-        assert!(leader.is_some(), "Seed {}: Expected cluster to heal and elect a leader", seed);
+        assert!(
+            leader.is_some(),
+            "Seed {}: Expected cluster to heal and elect a leader",
+            seed
+        );
     }
 }
 
@@ -439,12 +460,24 @@ async fn test_committed_entries_survive_minority_failure() {
 
     // Verify it is committed
     assert_eq!(
-        cluster.sms.get(&l1).unwrap().db.lock().get("x").map(|s| s.as_str()),
+        cluster
+            .sms
+            .get(&l1)
+            .unwrap()
+            .db
+            .lock()
+            .get("x")
+            .map(|s| s.as_str()),
         Some("10")
     );
 
     // Disconnect one follower (minority failure)
-    let followers: Vec<NodeId> = cluster.nodes.keys().cloned().filter(|&id| id != l1).collect();
+    let followers: Vec<NodeId> = cluster
+        .nodes
+        .keys()
+        .cloned()
+        .filter(|&id| id != l1)
+        .collect();
     let disconnected = followers[0];
     {
         let mut net = cluster.network.lock();
@@ -458,7 +491,14 @@ async fn test_committed_entries_survive_minority_failure() {
 
     // Verify second entry commits on leader and the connected follower
     assert_eq!(
-        cluster.sms.get(&l1).unwrap().db.lock().get("y").map(|s| s.as_str()),
+        cluster
+            .sms
+            .get(&l1)
+            .unwrap()
+            .db
+            .lock()
+            .get("y")
+            .map(|s| s.as_str()),
         Some("20")
     );
 
@@ -471,11 +511,25 @@ async fn test_committed_entries_survive_minority_failure() {
 
     // Verify reconnected follower caught up and has both entries
     assert_eq!(
-        cluster.sms.get(&disconnected).unwrap().db.lock().get("x").map(|s| s.as_str()),
+        cluster
+            .sms
+            .get(&disconnected)
+            .unwrap()
+            .db
+            .lock()
+            .get("x")
+            .map(|s| s.as_str()),
         Some("10")
     );
     assert_eq!(
-        cluster.sms.get(&disconnected).unwrap().db.lock().get("y").map(|s| s.as_str()),
+        cluster
+            .sms
+            .get(&disconnected)
+            .unwrap()
+            .db
+            .lock()
+            .get("y")
+            .map(|s| s.as_str()),
         Some("20")
     );
 }
@@ -490,7 +544,11 @@ async fn test_log_matching_property() {
     for i in 0..10 {
         let leader = cluster.find_leader();
         if let Some(l) = leader {
-            let _ = cluster.nodes.get(&l).unwrap().propose(format!("k_{},v_{}", i, i).into_bytes());
+            let _ = cluster
+                .nodes
+                .get(&l)
+                .unwrap()
+                .propose(format!("k_{},v_{}", i, i).into_bytes());
         }
 
         // Apply a random partition
@@ -568,7 +626,11 @@ async fn test_linearizability_after_chaos() {
 
             let leader = cluster.find_leader();
             if let Some(l) = leader {
-                let rx = cluster.nodes.get(&l).unwrap().propose(format!("{},{}", key, val).into_bytes());
+                let rx = cluster
+                    .nodes
+                    .get(&l)
+                    .unwrap()
+                    .propose(format!("{},{}", key, val).into_bytes());
                 // Let some commit and some maybe time out/fail due to partitions
                 cluster.tick_n(10);
                 if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_millis(5), rx).await {
@@ -610,7 +672,8 @@ async fn test_linearizability_after_chaos() {
                     node_db.get(k),
                     Some(v),
                     "Reference value mismatch on seed {} for node {}",
-                    seed, id
+                    seed,
+                    id
                 );
             }
         }

@@ -1,12 +1,12 @@
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
-use tempfile::TempDir;
-use strata_consensus::{NodeId, ConfigState};
+use strata_consensus::{ConfigState, NodeId};
 use strata_sharding::{
-    ChaosNetwork, MetaCommand, MultiRaftNode, MultiRaftTransport,
-    RangeRoute, RoutingTable, ShardCommand, ShardId, LoadReport, RebalanceOp,
+    ChaosNetwork, LoadReport, MetaCommand, MultiRaftNode, MultiRaftTransport, RangeRoute,
+    RebalanceOp, RoutingTable, ShardCommand, ShardId,
 };
+use tempfile::TempDir;
 
 async fn run_network_ticks(network: &Arc<Mutex<ChaosNetwork>>, ticks: usize) {
     for _ in 0..ticks {
@@ -59,9 +59,19 @@ async fn test_shard_split_preserves_all_keys() {
     assert!(leader_id > 0, "No leader elected for Shard 1");
 
     // Write keys to Shard 1
-    let leader_node = servers.get(&leader_id).unwrap().shards.lock().get(&ShardId(1)).unwrap().clone();
-    
-    let ts = strata_storage::HlcTimestamp { physical: 1, logical: 0 };
+    let leader_node = servers
+        .get(&leader_id)
+        .unwrap()
+        .shards
+        .lock()
+        .get(&ShardId(1))
+        .unwrap()
+        .clone();
+
+    let ts = strata_storage::HlcTimestamp {
+        physical: 1,
+        logical: 0,
+    };
     let put_a = ShardCommand::Put {
         key: b"apple".to_vec(),
         value: b"red".to_vec(),
@@ -104,7 +114,10 @@ async fn test_shard_split_preserves_all_keys() {
             let opt = sm.storage.lock();
             let storage = opt.as_ref().unwrap();
             use strata_storage::Storage;
-            let max_ts = strata_storage::HlcTimestamp { physical: u64::MAX, logical: u32::MAX };
+            let max_ts = strata_storage::HlcTimestamp {
+                physical: u64::MAX,
+                logical: u32::MAX,
+            };
             let val_apple = storage.get(b"apple", ts).unwrap();
             let val_zebra = storage.get(b"zebra", max_ts).unwrap();
             assert_eq!(val_apple, Some(b"red".to_vec()));
@@ -150,7 +163,10 @@ async fn test_shard_merge_preserves_all_keys() {
     // Start Shard 1 and Shard 2
     for &id in &node_ids {
         let peers: Vec<NodeId> = node_ids.iter().cloned().filter(|&p| p != id).collect();
-        servers.get(&id).unwrap().start_shard(ShardId(1), peers.clone());
+        servers
+            .get(&id)
+            .unwrap()
+            .start_shard(ShardId(1), peers.clone());
         servers.get(&id).unwrap().start_shard(ShardId(2), peers);
     }
 
@@ -174,7 +190,10 @@ async fn test_shard_merge_preserves_all_keys() {
     }
     assert!(leader1 > 0 && leader2 > 0);
 
-    let ts = strata_storage::HlcTimestamp { physical: 1, logical: 0 };
+    let ts = strata_storage::HlcTimestamp {
+        physical: 1,
+        logical: 0,
+    };
     let put_a = ShardCommand::Put {
         key: b"apple".to_vec(),
         value: b"red".to_vec(),
@@ -187,18 +206,41 @@ async fn test_shard_merge_preserves_all_keys() {
     };
 
     // Write "apple" to Shard 1, "zebra" to Shard 2
-    let node1 = servers.get(&leader1).unwrap().shards.lock().get(&ShardId(1)).unwrap().clone();
-    let node2 = servers.get(&leader2).unwrap().shards.lock().get(&ShardId(2)).unwrap().clone();
+    let node1 = servers
+        .get(&leader1)
+        .unwrap()
+        .shards
+        .lock()
+        .get(&ShardId(1))
+        .unwrap()
+        .clone();
+    let node2 = servers
+        .get(&leader2)
+        .unwrap()
+        .shards
+        .lock()
+        .get(&ShardId(2))
+        .unwrap()
+        .clone();
 
-    let _ = node1.propose(bincode::serialize(&put_a).unwrap()).await.unwrap();
-    let _ = node2.propose(bincode::serialize(&put_z).unwrap()).await.unwrap();
+    let _ = node1
+        .propose(bincode::serialize(&put_a).unwrap())
+        .await
+        .unwrap();
+    let _ = node2
+        .propose(bincode::serialize(&put_z).unwrap())
+        .await
+        .unwrap();
     run_network_ticks(&network, 20).await;
 
     // Merge Shard 2 into Shard 1
     let merge_cmd = ShardCommand::Merge {
         target_shard_id: ShardId(1),
     };
-    let _ = node2.propose(bincode::serialize(&merge_cmd).unwrap()).await.unwrap();
+    let _ = node2
+        .propose(bincode::serialize(&merge_cmd).unwrap())
+        .await
+        .unwrap();
     run_network_ticks(&network, 20).await;
 
     // Now start/simulate the merge collection on Shard 1
@@ -206,7 +248,7 @@ async fn test_shard_merge_preserves_all_keys() {
         let server = servers.get(&id).unwrap();
         // Stop Shard 2
         server.stop_shard(ShardId(2));
-        
+
         // Re-open Shard 1 database to trigger merge file loading
         server.stop_shard(ShardId(1));
         let peers: Vec<NodeId> = node_ids.iter().cloned().filter(|&p| p != id).collect();
@@ -278,7 +320,14 @@ async fn test_joint_consensus_membership_change_no_split_brain() {
     let peers4: Vec<NodeId> = initial_nodes.iter().cloned().collect();
     servers.get(&4).unwrap().start_shard(ShardId(1), peers4);
 
-    let leader_node = servers.get(&leader_id).unwrap().shards.lock().get(&ShardId(1)).unwrap().clone();
+    let leader_node = servers
+        .get(&leader_id)
+        .unwrap()
+        .shards
+        .lock()
+        .get(&ShardId(1))
+        .unwrap()
+        .clone();
     let rx_change = leader_node.change_membership(vec![2, 3, 4]);
 
     // Let joint consensus phase begin and progress
@@ -292,10 +341,7 @@ async fn test_joint_consensus_membership_change_no_split_brain() {
         let shards = servers.get(&id).unwrap().shards.lock();
         if let Some(node) = shards.get(&ShardId(1)) {
             let state = node.state.lock();
-            assert_eq!(
-                state.config,
-                ConfigState::Stable(vec![2, 3, 4])
-            );
+            assert_eq!(state.config, ConfigState::Stable(vec![2, 3, 4]));
         }
     }
 }
@@ -326,16 +372,15 @@ async fn test_rebalancer_converges() {
     ];
 
     let current_load = LoadReport {
-        shard_loads: vec![
-            (ShardId(1), 10),
-            (ShardId(2), 10),
-            (ShardId(3), 10),
-        ],
+        shard_loads: vec![(ShardId(1), 10), (ShardId(2), 10), (ShardId(3), 10)],
     };
 
     let all_nodes = vec![1, 2, 3];
     let ops = table.propose_rebalance(&current_load, &all_nodes, 5);
-    assert!(!ops.is_empty(), "Imbalance should trigger rebalance operations");
+    assert!(
+        !ops.is_empty(),
+        "Imbalance should trigger rebalance operations"
+    );
 
     if let RebalanceOp::Move { shard, from, to } = &ops[0] {
         assert!(shard.0 == 1 || shard.0 == 2);
@@ -388,8 +433,15 @@ async fn test_routing_table_consistency() {
     }
     assert!(leader_id > 0);
 
-    let leader_node = servers.get(&leader_id).unwrap().shards.lock().get(&ShardId(0)).unwrap().clone();
-    
+    let leader_node = servers
+        .get(&leader_id)
+        .unwrap()
+        .shards
+        .lock()
+        .get(&ShardId(0))
+        .unwrap()
+        .clone();
+
     let route = RangeRoute {
         start_key: b"a".to_vec(),
         end_key: b"z".to_vec(),
@@ -398,7 +450,7 @@ async fn test_routing_table_consistency() {
     };
     let update_cmd = MetaCommand::UpdateRoute(route);
     let rx_route = leader_node.propose(bincode::serialize(&update_cmd).unwrap());
-    
+
     run_network_ticks(&network, 20).await;
     assert!(rx_route.await.unwrap().is_ok());
 

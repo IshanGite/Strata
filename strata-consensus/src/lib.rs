@@ -1,11 +1,11 @@
+use parking_lot::Mutex;
+use rand::SeedableRng;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use parking_lot::Mutex;
-use rand::SeedableRng;
 use strata_storage::wal::Wal;
 
 pub type NodeId = u64;
@@ -141,10 +141,7 @@ pub enum Role {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum ConfigState {
     Stable(Vec<NodeId>),
-    Joint {
-        old: Vec<NodeId>,
-        new: Vec<NodeId>,
-    },
+    Joint { old: Vec<NodeId>, new: Vec<NodeId> },
 }
 
 impl ConfigState {
@@ -164,12 +161,21 @@ impl ConfigState {
     pub fn is_quorum(&self, votes: &HashSet<NodeId>, self_id: NodeId) -> bool {
         match self {
             ConfigState::Stable(nodes) => {
-                let count = nodes.iter().filter(|&&n| votes.contains(&n) || n == self_id).count();
+                let count = nodes
+                    .iter()
+                    .filter(|&&n| votes.contains(&n) || n == self_id)
+                    .count();
                 count > nodes.len() / 2
             }
             ConfigState::Joint { old, new } => {
-                let count_old = old.iter().filter(|&&n| votes.contains(&n) || n == self_id).count();
-                let count_new = new.iter().filter(|&&n| votes.contains(&n) || n == self_id).count();
+                let count_old = old
+                    .iter()
+                    .filter(|&&n| votes.contains(&n) || n == self_id)
+                    .count();
+                let count_new = new
+                    .iter()
+                    .filter(|&&n| votes.contains(&n) || n == self_id)
+                    .count();
                 count_old > old.len() / 2 && count_new > new.len() / 2
             }
         }
@@ -396,6 +402,19 @@ pub struct RaftNode<S, T> {
     pub rng: Arc<Mutex<rand::rngs::StdRng>>,
 }
 
+pub struct HandleEventCtx<'a, S, T> {
+    pub shard_id: u32,
+    pub id: NodeId,
+    pub peers: &'a [NodeId],
+    pub wal_path: &'a Path,
+    pub state_lock: &'a Arc<Mutex<RaftState>>,
+    pub wal_lock: &'a Arc<Mutex<Wal>>,
+    pub rng_lock: &'a Arc<Mutex<rand::rngs::StdRng>>,
+    pub state_machine: &'a Arc<S>,
+    pub transport: &'a Arc<T>,
+    pub event_tx: &'a tokio::sync::mpsc::UnboundedSender<Event>,
+}
+
 impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
     pub fn new(
         shard_id: u32,
@@ -414,26 +433,28 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
         default_nodes.push(id);
         default_nodes.sort();
 
-        let (last_included_index, last_included_term, snapshot_config, snapshot_payload) = if snapshot_path.exists() {
-            let data = fs::read(&snapshot_path)?;
-            if data.len() >= 20 {
-                let last_idx = u64::from_le_bytes(data[0..8].try_into().unwrap());
-                let last_term = u64::from_le_bytes(data[8..16].try_into().unwrap());
-                let config_len = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
-                let config: ConfigState = bincode::deserialize(&data[20..20+config_len]).unwrap();
-                let payload = data[20+config_len..].to_vec();
-                (last_idx, last_term, config, payload)
+        let (last_included_index, last_included_term, snapshot_config, snapshot_payload) =
+            if snapshot_path.exists() {
+                let data = fs::read(&snapshot_path)?;
+                if data.len() >= 20 {
+                    let last_idx = u64::from_le_bytes(data[0..8].try_into().unwrap());
+                    let last_term = u64::from_le_bytes(data[8..16].try_into().unwrap());
+                    let config_len = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+                    let config: ConfigState =
+                        bincode::deserialize(&data[20..20 + config_len]).unwrap();
+                    let payload = data[20 + config_len..].to_vec();
+                    (last_idx, last_term, config, payload)
+                } else {
+                    (0, 0, ConfigState::Stable(default_nodes.clone()), Vec::new())
+                }
             } else {
                 (0, 0, ConfigState::Stable(default_nodes.clone()), Vec::new())
-            }
-        } else {
-            (0, 0, ConfigState::Stable(default_nodes.clone()), Vec::new())
-        };
+            };
 
         if last_included_index > 0 {
-            state_machine.restore(&snapshot_payload).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Restore failed: {}", e))
-            })?;
+            state_machine
+                .restore(&snapshot_payload)
+                .map_err(|e| io::Error::other(format!("Restore failed: {}", e)))?;
         }
 
         let mut wal = Wal::new(&wal_path)?;
@@ -499,10 +520,10 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
 
         for idx in (state.last_applied + 1)..=state.commit_index {
             if let Some(entry) = state.get_entry(idx) {
-                if let Ok(payload) = bincode::deserialize::<EntryPayload>(&entry.data) {
-                    if let EntryPayload::Command(cmd) = payload {
-                        let _ = state_machine.apply(&cmd);
-                    }
+                if let Ok(EntryPayload::Command(cmd)) =
+                    bincode::deserialize::<EntryPayload>(&entry.data)
+                {
+                    let _ = state_machine.apply(&cmd);
                 }
             }
         }
@@ -535,19 +556,19 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 if matches!(event, Event::Shutdown) {
                     break;
                 }
-                Self::handle_event(
+                let mut ctx = HandleEventCtx {
                     shard_id,
-                    loop_id,
-                    &loop_peers,
-                    &loop_wal_path,
-                    &loop_state,
-                    &loop_wal,
-                    &loop_rng,
-                    &loop_sm,
-                    &loop_transport,
-                    &loop_tx,
-                    event,
-                );
+                    id: loop_id,
+                    peers: &loop_peers,
+                    wal_path: &loop_wal_path,
+                    state_lock: &loop_state,
+                    wal_lock: &loop_wal,
+                    rng_lock: &loop_rng,
+                    state_machine: &loop_sm,
+                    transport: &loop_transport,
+                    event_tx: &loop_tx,
+                };
+                Self::handle_event(&mut ctx, event);
             }
         });
 
@@ -575,9 +596,14 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
         rx
     }
 
-    pub fn change_membership(&self, new_nodes: Vec<NodeId>) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+    pub fn change_membership(
+        &self,
+        new_nodes: Vec<NodeId>,
+    ) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self.event_tx.send(Event::ProposeConfigChange { new_nodes, tx });
+        let _ = self
+            .event_tx
+            .send(Event::ProposeConfigChange { new_nodes, tx });
         rx
     }
 
@@ -597,7 +623,10 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
         rx.await.unwrap()
     }
 
-    pub async fn handle_install_snapshot_rpc(&self, req: InstallSnapshotReq) -> InstallSnapshotResp {
+    pub async fn handle_install_snapshot_rpc(
+        &self,
+        req: InstallSnapshotReq,
+    ) -> InstallSnapshotResp {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.event_tx.send(Event::InstallSnapshot { req, tx });
         rx.await.unwrap()
@@ -616,7 +645,7 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
         state.last_snapshot_index = last_included_index;
         state.last_snapshot_term = last_included_term;
         state.last_snapshot_data = snapshot_data.clone();
-        
+
         // Use committed config as snapshot configuration
         state.snapshot_config = state.config_at(last_included_index);
 
@@ -628,7 +657,9 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
         }
         state.log = new_log;
 
-        let snapshot_path = self.wal_path.with_file_name(format!("snapshot_node_{}.bin", self.id));
+        let snapshot_path = self
+            .wal_path
+            .with_file_name(format!("snapshot_node_{}.bin", self.id));
         let config_bytes = bincode::serialize(&state.snapshot_config).unwrap();
         let mut data = Vec::with_capacity(20 + config_bytes.len() + snapshot_data.len());
         data.extend_from_slice(&last_included_index.to_le_bytes());
@@ -642,27 +673,22 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
         Ok(())
     }
 
-    fn handle_event(
-        shard_id: u32,
-        id: NodeId,
-        peers: &[NodeId],
-        wal_path: &Path,
-        state_lock: &Arc<Mutex<RaftState>>,
-        wal_lock: &Arc<Mutex<Wal>>,
-        rng_lock: &Arc<Mutex<rand::rngs::StdRng>>,
-        state_machine: &Arc<S>,
-        transport: &Arc<T>,
-        event_tx: &tokio::sync::mpsc::UnboundedSender<Event>,
-        event: Event,
-    ) {
+    fn handle_event(ctx: &mut HandleEventCtx<'_, S, T>, event: Event) {
         match event {
             Event::Tick => {
-                let mut state = state_lock.lock();
+                let mut state = ctx.state_lock.lock();
                 if state.role == Role::Leader {
                     state.heartbeat_elapsed += 1;
                     if state.heartbeat_elapsed >= state.heartbeat_timeout {
                         state.heartbeat_elapsed = 0;
-                        Self::broadcast_append_entries(shard_id, id, peers, &state, transport, event_tx);
+                        Self::broadcast_append_entries(
+                            ctx.shard_id,
+                            ctx.id,
+                            ctx.peers,
+                            &state,
+                            ctx.transport,
+                            ctx.event_tx,
+                        );
                     }
                 } else {
                     state.election_elapsed += 1;
@@ -670,46 +696,63 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                         state.election_elapsed = 0;
                         state.role = Role::Candidate;
                         state.current_term += 1;
-                        state.voted_for = Some(id);
-                        let mut rng = rng_lock.lock();
+                        state.voted_for = Some(ctx.id);
+                        let mut rng = ctx.rng_lock.lock();
                         use rand::Rng;
                         state.election_timeout = rng.gen_range(15..30);
 
-                        let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                        let _ = Self::persist_term_and_vote(
+                            ctx.wal_lock,
+                            state.current_term,
+                            state.voted_for,
+                        );
 
                         state.votes_received.clear();
-                        state.votes_received.insert(id);
+                        state.votes_received.insert(ctx.id);
 
-                        if state.config.is_quorum(&state.votes_received, id) {
+                        if state.config.is_quorum(&state.votes_received, ctx.id) {
                             state.role = Role::Leader;
                             let last_idx = state.last_log_index();
                             let all = state.config.all_nodes();
                             for &peer in &all {
-                                if peer != id {
+                                if peer != ctx.id {
                                     state.next_index.insert(peer, last_idx + 1);
                                     state.match_index.insert(peer, 0);
                                 }
                             }
-                            Self::broadcast_append_entries(shard_id, id, peers, &state, transport, event_tx);
+                            Self::broadcast_append_entries(
+                                ctx.shard_id,
+                                ctx.id,
+                                ctx.peers,
+                                &state,
+                                ctx.transport,
+                                ctx.event_tx,
+                            );
                         } else {
                             let term = state.current_term;
                             let last_log_idx = state.last_log_index();
                             let last_log_t = state.last_log_term();
                             let all = state.config.all_nodes();
                             for &peer in &all {
-                                if peer != id {
-                                    let tx = event_tx.clone();
-                                    let transport_clone = transport.clone();
+                                if peer != ctx.id {
+                                    let tx = ctx.event_tx.clone();
+                                    let transport_clone = ctx.transport.clone();
                                     let req = RequestVoteReq {
-                                        shard_id,
+                                        shard_id: ctx.shard_id,
                                         term,
-                                        candidate_id: id,
+                                        candidate_id: ctx.id,
                                         last_log_index: last_log_idx,
                                         last_log_term: last_log_t,
                                     };
                                     std::thread::spawn(move || {
-                                        if let Ok(resp) = transport_clone.send_request_vote(peer, req) {
-                                            let _ = tx.send(Event::RequestVoteResponse { peer, term, resp });
+                                        if let Ok(resp) =
+                                            transport_clone.send_request_vote(peer, req)
+                                        {
+                                            let _ = tx.send(Event::RequestVoteResponse {
+                                                peer,
+                                                term,
+                                                resp,
+                                            });
                                         }
                                     });
                                 }
@@ -719,7 +762,7 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 }
             }
             Event::RequestVote { req, tx } => {
-                let mut state = state_lock.lock();
+                let mut state = ctx.state_lock.lock();
                 let mut stepped_down = false;
                 if req.term > state.current_term {
                     state.current_term = req.term;
@@ -729,23 +772,27 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 }
 
                 let mut vote_granted = false;
-                if req.term == state.current_term {
-                    if state.voted_for.is_none() || state.voted_for == Some(req.candidate_id) {
-                        let last_log_idx = state.last_log_index();
-                        let last_log_t = state.last_log_term();
-                        let log_ok = req.last_log_term > last_log_t
-                            || (req.last_log_term == last_log_t && req.last_log_index >= last_log_idx);
-                        if log_ok {
-                            vote_granted = true;
-                            state.voted_for = Some(req.candidate_id);
-                            state.election_elapsed = 0;
-                            stepped_down = true;
-                        }
+                if req.term == state.current_term
+                    && (state.voted_for.is_none() || state.voted_for == Some(req.candidate_id))
+                {
+                    let last_log_idx = state.last_log_index();
+                    let last_log_t = state.last_log_term();
+                    let log_ok = req.last_log_term > last_log_t
+                        || (req.last_log_term == last_log_t && req.last_log_index >= last_log_idx);
+                    if log_ok {
+                        vote_granted = true;
+                        state.voted_for = Some(req.candidate_id);
+                        state.election_elapsed = 0;
+                        stepped_down = true;
                     }
                 }
 
                 if stepped_down {
-                    let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                    let _ = Self::persist_term_and_vote(
+                        ctx.wal_lock,
+                        state.current_term,
+                        state.voted_for,
+                    );
                 }
 
                 let _ = tx.send(RequestVoteResp {
@@ -754,7 +801,7 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 });
             }
             Event::AppendEntries { req, tx } => {
-                let mut state = state_lock.lock();
+                let mut state = ctx.state_lock.lock();
                 let mut stepped_down = false;
                 if req.term > state.current_term {
                     state.current_term = req.term;
@@ -770,7 +817,11 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                         match_index: state.last_log_index(),
                     });
                     if stepped_down {
-                        let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                        let _ = Self::persist_term_and_vote(
+                            ctx.wal_lock,
+                            state.current_term,
+                            state.voted_for,
+                        );
                     }
                     return;
                 }
@@ -797,7 +848,11 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                         match_index: state.last_log_index(),
                     });
                     if stepped_down {
-                        let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                        let _ = Self::persist_term_and_vote(
+                            ctx.wal_lock,
+                            state.current_term,
+                            state.voted_for,
+                        );
                     }
                     return;
                 }
@@ -810,14 +865,14 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                         if existing_term != entry.term {
                             let pos = (idx - state.last_snapshot_index - 1) as usize;
                             state.log.truncate(pos);
-                            let _ = Self::persist_log_len(wal_lock, state.last_log_index());
+                            let _ = Self::persist_log_len(ctx.wal_lock, state.last_log_index());
                             state.log.push(entry.clone());
-                            let _ = Self::persist_log_entry(wal_lock, &entry);
+                            let _ = Self::persist_log_entry(ctx.wal_lock, &entry);
                             config_changed = true;
                         }
                     } else {
                         state.log.push(entry.clone());
-                        let _ = Self::persist_log_entry(wal_lock, &entry);
+                        let _ = Self::persist_log_entry(ctx.wal_lock, &entry);
                         config_changed = true;
                     }
                 }
@@ -833,7 +888,11 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 }
 
                 if stepped_down {
-                    let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                    let _ = Self::persist_term_and_vote(
+                        ctx.wal_lock,
+                        state.current_term,
+                        state.voted_for,
+                    );
                 }
 
                 let term = state.current_term;
@@ -841,7 +900,7 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 drop(state);
 
                 if apply_needed {
-                    Self::apply_committed(state_lock, state_machine);
+                    Self::apply_committed(ctx.state_lock, ctx.state_machine);
                 }
 
                 let _ = tx.send(AppendEntriesResp {
@@ -851,7 +910,7 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 });
             }
             Event::InstallSnapshot { req, tx } => {
-                let mut state = state_lock.lock();
+                let mut state = ctx.state_lock.lock();
                 let mut stepped_down = false;
                 if req.term > state.current_term {
                     state.current_term = req.term;
@@ -861,9 +920,15 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 }
 
                 if req.term < state.current_term {
-                    let _ = tx.send(InstallSnapshotResp { term: state.current_term });
+                    let _ = tx.send(InstallSnapshotResp {
+                        term: state.current_term,
+                    });
                     if stepped_down {
-                        let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                        let _ = Self::persist_term_and_vote(
+                            ctx.wal_lock,
+                            state.current_term,
+                            state.voted_for,
+                        );
                     }
                     return;
                 }
@@ -877,14 +942,14 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 // Load snapshot header
                 if req.last_included_index > state.last_snapshot_index {
                     // Extract snapshot payload
-                    if let Ok(()) = state_machine.restore(&req.data) {
+                    if let Ok(()) = ctx.state_machine.restore(&req.data) {
                         // The InstallSnapshot request carries payload directly
                         // We also set the configuration
                         state.last_snapshot_index = req.last_included_index;
                         state.last_snapshot_term = req.last_included_term;
                         state.last_snapshot_data = req.data.clone();
                         // Recover snapshot config if it fits or we just keep it
-                        state.snapshot_config = ConfigState::Stable(peers.to_vec()); // Default stable
+                        state.snapshot_config = ConfigState::Stable(ctx.peers.to_vec()); // Default stable
                         state.commit_index = state.commit_index.max(req.last_included_index);
                         state.last_applied = state.last_applied.max(req.last_included_index);
 
@@ -897,9 +962,12 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                         state.log = new_log;
                         state.update_active_config();
 
-                        let snapshot_path = wal_path.with_file_name(format!("snapshot_node_{}.bin", id));
+                        let snapshot_path = ctx
+                            .wal_path
+                            .with_file_name(format!("snapshot_node_{}.bin", ctx.id));
                         let config_bytes = bincode::serialize(&state.snapshot_config).unwrap();
-                        let mut snapshot_data = Vec::with_capacity(20 + config_bytes.len() + req.data.len());
+                        let mut snapshot_data =
+                            Vec::with_capacity(20 + config_bytes.len() + req.data.len());
                         snapshot_data.extend_from_slice(&req.last_included_index.to_le_bytes());
                         snapshot_data.extend_from_slice(&req.last_included_term.to_le_bytes());
                         snapshot_data.extend_from_slice(&(config_bytes.len() as u32).to_le_bytes());
@@ -907,18 +975,24 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                         snapshot_data.extend_from_slice(&req.data);
                         let _ = fs::write(&snapshot_path, snapshot_data);
 
-                        let _ = Self::rewrite_wal(wal_path, id, &state, wal_lock);
+                        let _ = Self::rewrite_wal(ctx.wal_path, ctx.id, &state, ctx.wal_lock);
                     }
                 }
 
                 if stepped_down {
-                    let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                    let _ = Self::persist_term_and_vote(
+                        ctx.wal_lock,
+                        state.current_term,
+                        state.voted_for,
+                    );
                 }
 
-                let _ = tx.send(InstallSnapshotResp { term: state.current_term });
+                let _ = tx.send(InstallSnapshotResp {
+                    term: state.current_term,
+                });
             }
             Event::RequestVoteResponse { peer, term, resp } => {
-                let mut state = state_lock.lock();
+                let mut state = ctx.state_lock.lock();
                 if term != state.current_term || state.role != Role::Candidate {
                     return;
                 }
@@ -926,28 +1000,45 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                     state.current_term = resp.term;
                     state.voted_for = None;
                     state.role = Role::Follower;
-                    let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                    let _ = Self::persist_term_and_vote(
+                        ctx.wal_lock,
+                        state.current_term,
+                        state.voted_for,
+                    );
                     return;
                 }
                 if resp.vote_granted {
                     state.votes_received.insert(peer);
-                    if state.config.is_quorum(&state.votes_received, id) {
+                    if state.config.is_quorum(&state.votes_received, ctx.id) {
                         state.role = Role::Leader;
                         let last_idx = state.last_log_index();
                         let all = state.config.all_nodes();
                         for &p in &all {
-                            if p != id {
+                            if p != ctx.id {
                                 state.next_index.insert(p, last_idx + 1);
                                 state.match_index.insert(p, 0);
                             }
                         }
                         state.heartbeat_elapsed = 0;
-                        Self::broadcast_append_entries(shard_id, id, peers, &state, transport, event_tx);
+                        Self::broadcast_append_entries(
+                            ctx.shard_id,
+                            ctx.id,
+                            ctx.peers,
+                            &state,
+                            ctx.transport,
+                            ctx.event_tx,
+                        );
                     }
                 }
             }
-            Event::AppendEntriesResponse { peer, term, resp, sent_prev_index, sent_count } => {
-                let mut state = state_lock.lock();
+            Event::AppendEntriesResponse {
+                peer,
+                term,
+                resp,
+                sent_prev_index,
+                sent_count,
+            } => {
+                let mut state = ctx.state_lock.lock();
                 if term != state.current_term || state.role != Role::Leader {
                     return;
                 }
@@ -955,7 +1046,11 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                     state.current_term = resp.term;
                     state.voted_for = None;
                     state.role = Role::Follower;
-                    let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                    let _ = Self::persist_term_and_vote(
+                        ctx.wal_lock,
+                        state.current_term,
+                        state.voted_for,
+                    );
                     return;
                 }
                 let mut apply_needed = false;
@@ -971,10 +1066,12 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                     let last_idx = state.last_log_index();
                     let mut possible_commit = state.commit_index;
                     for idx in (state.commit_index + 1)..=last_idx {
-                        if state.get_term(idx) == state.current_term {
-                            if state.config.can_commit(&state.match_index, id, last_idx, idx) {
-                                possible_commit = idx;
-                            }
+                        if state.get_term(idx) == state.current_term
+                            && state
+                                .config
+                                .can_commit(&state.match_index, ctx.id, last_idx, idx)
+                        {
+                            possible_commit = idx;
                         }
                     }
                     if possible_commit > state.commit_index {
@@ -985,19 +1082,26 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                     let next = state.next_index.get(&peer).cloned().unwrap_or(1);
                     if next > 1 {
                         state.next_index.insert(peer, next - 1);
-                        Self::send_append_entries_to_peer(shard_id, id, peer, &state, transport, event_tx);
+                        Self::send_append_entries_to_peer(
+                            ctx.shard_id,
+                            ctx.id,
+                            peer,
+                            &state,
+                            ctx.transport,
+                            ctx.event_tx,
+                        );
                     }
                 }
 
                 drop(state);
                 if apply_needed {
-                    Self::apply_committed(state_lock, state_machine);
+                    Self::apply_committed(ctx.state_lock, ctx.state_machine);
                 }
 
                 // Check if we need to propose the stable config now that the joint config is committed
                 let mut stable_to_propose: Option<Vec<NodeId>> = None;
                 {
-                    let state_check = state_lock.lock();
+                    let state_check = ctx.state_lock.lock();
                     if state_check.role == Role::Leader {
                         let committed_config = state_check.config_at(state_check.commit_index);
                         if let ConfigState::Joint { old: _, new } = committed_config {
@@ -1009,11 +1113,13 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 }
                 if let Some(new_nodes) = stable_to_propose {
                     let (tx, _rx) = tokio::sync::oneshot::channel();
-                    let _ = event_tx.send(Event::ProposeConfigStable { new_nodes, tx });
+                    let _ = ctx
+                        .event_tx
+                        .send(Event::ProposeConfigStable { new_nodes, tx });
                 }
             }
             Event::InstallSnapshotResponse { peer, term, resp } => {
-                let mut state = state_lock.lock();
+                let mut state = ctx.state_lock.lock();
                 if term != state.current_term || state.role != Role::Leader {
                     return;
                 }
@@ -1021,7 +1127,11 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                     state.current_term = resp.term;
                     state.voted_for = None;
                     state.role = Role::Follower;
-                    let _ = Self::persist_term_and_vote(wal_lock, state.current_term, state.voted_for);
+                    let _ = Self::persist_term_and_vote(
+                        ctx.wal_lock,
+                        state.current_term,
+                        state.voted_for,
+                    );
                     return;
                 }
                 let last_snapshot_idx = state.last_snapshot_index;
@@ -1029,7 +1139,7 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                 state.next_index.insert(peer, last_snapshot_idx + 1);
             }
             Event::Propose { data, tx } => {
-                let mut state = state_lock.lock();
+                let mut state = ctx.state_lock.lock();
                 if state.role != Role::Leader {
                     let _ = tx.send(Err("Not leader".to_string()));
                     return;
@@ -1043,12 +1153,19 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                     data: serialized,
                 };
                 state.log.push(entry.clone());
-                let _ = Self::persist_log_entry(wal_lock, &entry);
+                let _ = Self::persist_log_entry(ctx.wal_lock, &entry);
                 let _ = tx.send(Ok(index));
-                Self::broadcast_append_entries(shard_id, id, peers, &state, transport, event_tx);
+                Self::broadcast_append_entries(
+                    ctx.shard_id,
+                    ctx.id,
+                    ctx.peers,
+                    &state,
+                    ctx.transport,
+                    ctx.event_tx,
+                );
             }
             Event::ProposeConfigChange { new_nodes, tx } => {
-                let mut state = state_lock.lock();
+                let mut state = ctx.state_lock.lock();
                 if state.role != Role::Leader {
                     let _ = tx.send(Err("Not leader".to_string()));
                     return;
@@ -1067,26 +1184,34 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                             data,
                         };
                         state.log.push(entry.clone());
-                        let _ = Self::persist_log_entry(wal_lock, &entry);
+                        let _ = Self::persist_log_entry(ctx.wal_lock, &entry);
                         state.update_active_config();
 
                         let last_idx = state.last_log_index();
                         for &node in state.config.all_nodes().iter() {
-                            if node != id {
+                            if node != ctx.id {
                                 state.next_index.entry(node).or_insert(last_idx + 1);
                                 state.match_index.entry(node).or_insert(0);
                             }
                         }
                         let _ = tx.send(Ok(()));
-                        Self::broadcast_append_entries(shard_id, id, peers, &state, transport, event_tx);
+                        Self::broadcast_append_entries(
+                            ctx.shard_id,
+                            ctx.id,
+                            ctx.peers,
+                            &state,
+                            ctx.transport,
+                            ctx.event_tx,
+                        );
                     }
                     ConfigState::Joint { .. } => {
-                        let _ = tx.send(Err("Configuration change already in progress".to_string()));
+                        let _ =
+                            tx.send(Err("Configuration change already in progress".to_string()));
                     }
                 }
             }
             Event::ProposeConfigStable { new_nodes, tx } => {
-                let mut state = state_lock.lock();
+                let mut state = ctx.state_lock.lock();
                 if state.role != Role::Leader {
                     let _ = tx.send(Err("Not leader".to_string()));
                     return;
@@ -1101,10 +1226,17 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
                         data,
                     };
                     state.log.push(entry.clone());
-                    let _ = Self::persist_log_entry(wal_lock, &entry);
+                    let _ = Self::persist_log_entry(ctx.wal_lock, &entry);
                     state.update_active_config();
                     let _ = tx.send(Ok(()));
-                    Self::broadcast_append_entries(shard_id, id, peers, &state, transport, event_tx);
+                    Self::broadcast_append_entries(
+                        ctx.shard_id,
+                        ctx.id,
+                        ctx.peers,
+                        &state,
+                        ctx.transport,
+                        ctx.event_tx,
+                    );
                 }
             }
             Event::Shutdown => {}
@@ -1125,10 +1257,8 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
 
         let mut max_applied = last_applied;
         for (idx, data) in to_apply {
-            if let Ok(payload) = bincode::deserialize::<EntryPayload>(&data) {
-                if let EntryPayload::Command(cmd) = payload {
-                    let _ = state_machine.apply(&cmd);
-                }
+            if let Ok(EntryPayload::Command(cmd)) = bincode::deserialize::<EntryPayload>(&data) {
+                let _ = state_machine.apply(&cmd);
             }
             max_applied = idx;
         }
@@ -1220,9 +1350,16 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
         }
     }
 
-    fn persist_term_and_vote(wal_lock: &Arc<Mutex<Wal>>, term: u64, vote: Option<NodeId>) -> std::io::Result<()> {
+    fn persist_term_and_vote(
+        wal_lock: &Arc<Mutex<Wal>>,
+        term: u64,
+        vote: Option<NodeId>,
+    ) -> std::io::Result<()> {
         let mut wal = wal_lock.lock();
-        let ts = strata_storage::HlcTimestamp { physical: 0, logical: 0 };
+        let ts = strata_storage::HlcTimestamp {
+            physical: 0,
+            logical: 0,
+        };
         wal.append(false, b"term", &term.to_le_bytes(), ts)?;
         let vote_bytes = bincode::serialize(&vote).unwrap();
         wal.append(false, b"vote", &vote_bytes, ts)?;
@@ -1231,7 +1368,10 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
 
     fn persist_log_entry(wal_lock: &Arc<Mutex<Wal>>, entry: &LogEntry) -> std::io::Result<()> {
         let mut wal = wal_lock.lock();
-        let ts = strata_storage::HlcTimestamp { physical: 0, logical: 0 };
+        let ts = strata_storage::HlcTimestamp {
+            physical: 0,
+            logical: 0,
+        };
         let key = format!("entry_{:020}", entry.index).into_bytes();
         let val = bincode::serialize(entry).unwrap();
         wal.append(false, &key, &val, ts)?;
@@ -1241,7 +1381,10 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
 
     fn persist_log_len(wal_lock: &Arc<Mutex<Wal>>, new_len: u64) -> std::io::Result<()> {
         let mut wal = wal_lock.lock();
-        let ts = strata_storage::HlcTimestamp { physical: 0, logical: 0 };
+        let ts = strata_storage::HlcTimestamp {
+            physical: 0,
+            logical: 0,
+        };
         wal.append(false, b"log_len", &new_len.to_le_bytes(), ts)?;
         Ok(())
     }
@@ -1256,7 +1399,10 @@ impl<S: StateMachine + 'static, T: RaftTransport + 'static> RaftNode<S, T> {
         let _ = std::fs::remove_file(wal_path);
         let mut new_wal = Wal::new(wal_path)?;
 
-        let ts = strata_storage::HlcTimestamp { physical: 0, logical: 0 };
+        let ts = strata_storage::HlcTimestamp {
+            physical: 0,
+            logical: 0,
+        };
         new_wal.append(false, b"term", &state.current_term.to_le_bytes(), ts)?;
         let vote_bytes = bincode::serialize(&state.voted_for).unwrap();
         new_wal.append(false, b"vote", &vote_bytes, ts)?;

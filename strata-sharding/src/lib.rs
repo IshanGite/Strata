@@ -1,14 +1,14 @@
+use parking_lot::Mutex;
+use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use parking_lot::Mutex;
-use rand::{Rng, SeedableRng};
-use strata_storage::Storage;
 use strata_consensus::{
-    AppendEntriesReq, AppendEntriesResp, InstallSnapshotReq, InstallSnapshotResp,
-    NodeId, RaftNode, RaftTransport, RequestVoteReq, RequestVoteResp,
-    StateMachine, StateMachineError, TransportError,
+    AppendEntriesReq, AppendEntriesResp, InstallSnapshotReq, InstallSnapshotResp, NodeId, RaftNode,
+    RaftTransport, RequestVoteReq, RequestVoteResp, StateMachine, StateMachineError,
+    TransportError,
 };
+use strata_storage::Storage;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -66,7 +66,12 @@ impl RoutingTable {
         Self { routes: Vec::new() }
     }
 
-    pub fn propose_rebalance(&self, current_load: &LoadReport, all_nodes: &[NodeId], threshold: u64) -> Vec<RebalanceOp> {
+    pub fn propose_rebalance(
+        &self,
+        current_load: &LoadReport,
+        all_nodes: &[NodeId],
+        threshold: u64,
+    ) -> Vec<RebalanceOp> {
         let mut node_shards: HashMap<NodeId, Vec<ShardId>> = HashMap::new();
         for &node in all_nodes {
             node_shards.insert(node, Vec::new());
@@ -86,7 +91,11 @@ impl RoutingTable {
 
         let mut node_loads: HashMap<NodeId, u64> = HashMap::new();
         for &node in all_nodes {
-            let load = node_shards.get(&node).cloned().unwrap_or_default().iter()
+            let load = node_shards
+                .get(&node)
+                .cloned()
+                .unwrap_or_default()
+                .iter()
                 .map(|s| shard_load_map.get(s).cloned().unwrap_or(1))
                 .sum();
             node_loads.insert(node, load);
@@ -114,8 +123,14 @@ impl RoutingTable {
                 }
             }
 
-            let min_n = match min_node { Some(n) => n, None => break };
-            let max_n = match max_node { Some(n) => n, None => break };
+            let min_n = match min_node {
+                Some(n) => n,
+                None => break,
+            };
+            let max_n = match max_node {
+                Some(n) => n,
+                None => break,
+            };
 
             if max_val - min_val <= threshold {
                 break;
@@ -124,7 +139,11 @@ impl RoutingTable {
             let candidate_shards = temp_shards.get(&max_n).cloned().unwrap_or_default();
             let mut moved = false;
             for s in candidate_shards {
-                let target_has_shard = temp_shards.get(&min_n).cloned().unwrap_or_default().contains(&s);
+                let target_has_shard = temp_shards
+                    .get(&min_n)
+                    .cloned()
+                    .unwrap_or_default()
+                    .contains(&s);
                 if !target_has_shard {
                     let s_load = shard_load_map.get(&s).cloned().unwrap_or(1);
                     let diff_before = max_val - min_val;
@@ -169,7 +188,10 @@ impl ShardRouter for RoutingTable {
                 return r.shard_id;
             }
         }
-        self.routes.first().map(|r| r.shard_id).unwrap_or(ShardId(0))
+        self.routes
+            .first()
+            .map(|r| r.shard_id)
+            .unwrap_or(ShardId(0))
     }
 
     fn raft_group_for_shard(&self, shard: ShardId) -> Vec<NodeId> {
@@ -207,10 +229,22 @@ pub enum MetaCommand {
 // ----------------------------------------------------------------------
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ShardCommand {
-    Put { key: Vec<u8>, value: Vec<u8>, ts: strata_storage::HlcTimestamp },
-    Delete { key: Vec<u8>, ts: strata_storage::HlcTimestamp },
-    Split { new_shard_id: ShardId, split_key: Vec<u8> },
-    Merge { target_shard_id: ShardId },
+    Put {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        ts: strata_storage::HlcTimestamp,
+    },
+    Delete {
+        key: Vec<u8>,
+        ts: strata_storage::HlcTimestamp,
+    },
+    Split {
+        new_shard_id: ShardId,
+        split_key: Vec<u8>,
+    },
+    Merge {
+        target_shard_id: ShardId,
+    },
 }
 
 pub struct ShardStateMachine {
@@ -247,7 +281,10 @@ impl ShardStateMachine {
                 let _ = std::fs::remove_file(&merge_file);
             }
 
-            let ts = strata_storage::HlcTimestamp { physical: 0, logical: 0 };
+            let ts = strata_storage::HlcTimestamp {
+                physical: 0,
+                logical: 0,
+            };
             for (k, v) in init_data {
                 lsm.put(&k, &v, ts).unwrap();
             }
@@ -286,24 +323,35 @@ impl StateMachine for ShardStateMachine {
 
             let mut opt = self.storage.lock();
             if opt.is_none() {
-                return Err(StateMachineError::ApplyFailed("Storage not initialized".to_string()));
+                return Err(StateMachineError::ApplyFailed(
+                    "Storage not initialized".to_string(),
+                ));
             }
             let storage = opt.as_mut().unwrap();
 
             match cmd {
                 ShardCommand::Put { key, value, ts } => {
-                    storage.put(&key, &value, ts)
+                    storage
+                        .put(&key, &value, ts)
                         .map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
                     Ok(value)
                 }
                 ShardCommand::Delete { key, ts } => {
-                    storage.delete(&key, ts)
+                    storage
+                        .delete(&key, ts)
                         .map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
                     Ok(Vec::new())
                 }
-                ShardCommand::Split { new_shard_id, split_key } => {
-                    let max_ts = strata_storage::HlcTimestamp { physical: u64::MAX, logical: u32::MAX };
-                    let iter = storage.scan(&split_key, &[], max_ts)
+                ShardCommand::Split {
+                    new_shard_id,
+                    split_key,
+                } => {
+                    let max_ts = strata_storage::HlcTimestamp {
+                        physical: u64::MAX,
+                        logical: u32::MAX,
+                    };
+                    let iter = storage
+                        .scan(&split_key, &[], max_ts)
                         .map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
 
                     let mut split_data = HashMap::new();
@@ -312,15 +360,21 @@ impl StateMachine for ShardStateMachine {
                         let _ = storage.delete(&k, max_ts);
                     }
 
-                    let split_file = self.db_dir.with_file_name(format!("split_shard_{}.bin", new_shard_id.0));
+                    let split_file = self
+                        .db_dir
+                        .with_file_name(format!("split_shard_{}.bin", new_shard_id.0));
                     let bytes = bincode::serialize(&split_data).unwrap();
                     std::fs::write(split_file, bytes).unwrap();
 
                     Ok(Vec::new())
                 }
                 ShardCommand::Merge { target_shard_id } => {
-                    let max_ts = strata_storage::HlcTimestamp { physical: u64::MAX, logical: u32::MAX };
-                    let iter = storage.scan(&[], &[], max_ts)
+                    let max_ts = strata_storage::HlcTimestamp {
+                        physical: u64::MAX,
+                        logical: u32::MAX,
+                    };
+                    let iter = storage
+                        .scan(&[], &[], max_ts)
                         .map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
 
                     let mut merge_data = HashMap::new();
@@ -328,7 +382,9 @@ impl StateMachine for ShardStateMachine {
                         merge_data.insert(k, v);
                     }
 
-                    let merge_file = self.db_dir.with_file_name(format!("merge_shard_{}.bin", target_shard_id.0));
+                    let merge_file = self
+                        .db_dir
+                        .with_file_name(format!("merge_shard_{}.bin", target_shard_id.0));
                     let bytes = bincode::serialize(&merge_data).unwrap();
                     std::fs::write(merge_file, bytes).unwrap();
 
@@ -341,22 +397,26 @@ impl StateMachine for ShardStateMachine {
     fn snapshot(&self) -> Result<Vec<u8>, StateMachineError> {
         if self.shard_id.0 == 0 {
             let table = self.table.lock();
-            bincode::serialize(&*table).map_err(|e| StateMachineError::SnapshotFailed(e.to_string()))
+            bincode::serialize(&*table)
+                .map_err(|e| StateMachineError::SnapshotFailed(e.to_string()))
         } else {
             let opt = self.storage.lock();
             if opt.is_none() {
                 return Ok(Vec::new());
             }
             let storage = opt.as_ref().unwrap();
-            let max_ts = strata_storage::HlcTimestamp { physical: u64::MAX, logical: u32::MAX };
-            let iter = storage.scan(&[], &[], max_ts)
+            let max_ts = strata_storage::HlcTimestamp {
+                physical: u64::MAX,
+                logical: u32::MAX,
+            };
+            let iter = storage
+                .scan(&[], &[], max_ts)
                 .map_err(|e| StateMachineError::SnapshotFailed(e.to_string()))?;
             let mut data = HashMap::new();
             for (k, v) in iter {
                 data.insert(k, v);
             }
-            bincode::serialize(&data)
-                .map_err(|e| StateMachineError::SnapshotFailed(e.to_string()))
+            bincode::serialize(&data).map_err(|e| StateMachineError::SnapshotFailed(e.to_string()))
         }
     }
 
@@ -382,9 +442,13 @@ impl StateMachine for ShardStateMachine {
             let fresh = strata_storage::LsmStorage::open(&self.db_dir, 1024 * 1024, 0.01)
                 .map_err(|e| StateMachineError::RestoreFailed(e.to_string()))?;
 
-            let max_ts = strata_storage::HlcTimestamp { physical: 0, logical: 0 };
+            let max_ts = strata_storage::HlcTimestamp {
+                physical: 0,
+                logical: 0,
+            };
             for (k, v) in data {
-                fresh.put(&k, &v, max_ts)
+                fresh
+                    .put(&k, &v, max_ts)
                     .map_err(|e| StateMachineError::RestoreFailed(e.to_string()))?;
             }
             *storage = fresh;
@@ -393,13 +457,13 @@ impl StateMachine for ShardStateMachine {
     }
 }
 
-// ----------------------------------------------------------------------
-// Multi-Raft Node Server
-// ----------------------------------------------------------------------
+pub type ShardNode = RaftNode<ShardStateMachine, MultiRaftTransport>;
+pub type ShardMap = HashMap<ShardId, Arc<ShardNode>>;
+
 pub struct MultiRaftNode {
     pub node_id: NodeId,
     pub db_dir: PathBuf,
-    pub shards: Arc<Mutex<HashMap<ShardId, Arc<RaftNode<ShardStateMachine, MultiRaftTransport>>>>>,
+    pub shards: Arc<Mutex<ShardMap>>,
     pub sms: Arc<Mutex<HashMap<ShardId, Arc<ShardStateMachine>>>>,
     pub transport: Arc<MultiRaftTransport>,
     pub table: Arc<Mutex<RoutingTable>>,
@@ -419,17 +483,24 @@ impl MultiRaftNode {
 
     pub fn start_shard(&self, shard_id: ShardId, peers: Vec<NodeId>) {
         let shard_dir = self.db_dir.join(format!("shard_{}", shard_id.0));
-        let sm = Arc::new(ShardStateMachine::open(shard_id, shard_dir, self.table.clone()));
+        let sm = Arc::new(ShardStateMachine::open(
+            shard_id,
+            shard_dir,
+            self.table.clone(),
+        ));
         let wal_path = self.db_dir.join(format!("wal_shard_{}.log", shard_id.0));
 
-        let node = Arc::new(RaftNode::new(
-            shard_id.0,
-            self.node_id,
-            peers,
-            wal_path,
-            sm.clone(),
-            self.transport.clone(),
-        ).unwrap());
+        let node = Arc::new(
+            RaftNode::new(
+                shard_id.0,
+                self.node_id,
+                peers,
+                wal_path,
+                sm.clone(),
+                self.transport.clone(),
+            )
+            .unwrap(),
+        );
 
         self.shards.lock().insert(shard_id, node);
         self.sms.lock().insert(shard_id, sm);
@@ -641,15 +712,22 @@ impl ChaosNetwork {
                                 match msg.payload {
                                     NetworkPayload::RequestVote(req) => {
                                         let resp = target_node.handle_request_vote_rpc(req).await;
-                                        let _ = msg.reply_tx.send(Ok(NetworkResponse::RequestVote(resp)));
+                                        let _ = msg
+                                            .reply_tx
+                                            .send(Ok(NetworkResponse::RequestVote(resp)));
                                     }
                                     NetworkPayload::AppendEntries(req) => {
                                         let resp = target_node.handle_append_entries_rpc(req).await;
-                                        let _ = msg.reply_tx.send(Ok(NetworkResponse::AppendEntries(resp)));
+                                        let _ = msg
+                                            .reply_tx
+                                            .send(Ok(NetworkResponse::AppendEntries(resp)));
                                     }
                                     NetworkPayload::InstallSnapshot(req) => {
-                                        let resp = target_node.handle_install_snapshot_rpc(req).await;
-                                        let _ = msg.reply_tx.send(Ok(NetworkResponse::InstallSnapshot(resp)));
+                                        let resp =
+                                            target_node.handle_install_snapshot_rpc(req).await;
+                                        let _ = msg
+                                            .reply_tx
+                                            .send(Ok(NetworkResponse::InstallSnapshot(resp)));
                                     }
                                 }
                             });
