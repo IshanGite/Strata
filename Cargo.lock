@@ -1708,6 +1708,12 @@ dependencies = [
 [[package]]
 name = "strata-simd"
 version = "0.1.0"
+dependencies = [
+ "bincode",
+ "proptest",
+ "rand 0.8.6",
+ "serde",
+]
 
 [[package]]
 name = "strata-storage"

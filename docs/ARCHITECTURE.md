@@ -176,3 +176,29 @@ pub struct RouteEntry {
 ```
 
 The router maintains a sorted list of `RouteEntry` objects. A key is routed by performing a binary search on the entries to find the range `[start_key, end_key)` that encompasses it. The table is updated dynamically when splits, merges, or rebalances occur.
+
+---
+
+## 7. Performance Benchmarks (strata-simd)
+
+The following tables show real benchmark latencies and PQ recall curves measured on this machine:
+
+### 1. Vector Distance Metric Latency
+*Evaluated across 10,000 iterations for 128-dimensional vectors.*
+
+| Metric | Dimension | Scalar Latency (ns) | NEON / Dispatch Latency (ns) | Speedup |
+|---|---|---|---|---|
+| Dot Product | 128 | 1364.22 | 934.53 | 1.46x |
+| L2 Distance | 128 | 1451.62 | 995.15 | 1.46x |
+| Cosine Dist | 128 | 4147.91 | 2715.86 | 1.53x |
+| L1 Distance | 128 | 1543.26 | 1010.72 | 1.53x |
+
+### 2. Product Quantization (PQ) recall and ADC latency curves
+*Evaluated against a dataset of 1,000 vectors using Recall@20.*
+
+| Compression Ratio | M Subspaces | Bytes per Vector | ADC Latency (ns) | Recall@20 |
+|---|---|---|---|---|
+| 64.00x | 8 | 8 B | 61.58 | 35.00% |
+| 32.00x | 16 | 16 B | 100.75 | 40.00% |
+| 16.00x | 32 | 32 B | 186.21 | 60.00% |
+

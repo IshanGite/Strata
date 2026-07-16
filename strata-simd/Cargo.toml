@@ -4,4 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# strata-simd will be targeting Apple Silicon NEON with a fallback
+rand = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
