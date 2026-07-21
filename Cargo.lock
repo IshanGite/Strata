@@ -1650,7 +1650,11 @@ dependencies = [
 name = "strata-index"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "rand 0.8.6",
  "serde",
+ "strata-simd",
+ "tempfile",
 ]
 
 [[package]]
@@ -1730,8 +1734,15 @@ dependencies = [
 name = "strata-txn"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "futures",
+ "parking_lot",
  "serde",
+ "strata-consensus",
+ "strata-sharding",
  "strata-storage",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

@@ -227,6 +227,70 @@ pub enum MetaCommand {
 // ----------------------------------------------------------------------
 // Unified Shard State Machine
 // ----------------------------------------------------------------------
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct LockInfo {
+    pub primary: Vec<u8>,
+    pub ts: strata_storage::HlcTimestamp,
+    pub ttl: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum PrewriteError {
+    WriteConflict(strata_storage::HlcTimestamp),
+    LockConflict {
+        primary: Vec<u8>,
+        ts: strata_storage::HlcTimestamp,
+    },
+}
+
+pub fn lock_key(key: &[u8]) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + key.len());
+    k.push(b'l');
+    k.extend_from_slice(key);
+    k
+}
+
+pub fn data_key(key: &[u8]) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + key.len());
+    k.push(b'd');
+    k.extend_from_slice(key);
+    k
+}
+
+pub fn write_key(key: &[u8]) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + key.len());
+    k.push(b'w');
+    k.extend_from_slice(key);
+    k
+}
+
+pub fn error_key(key: &[u8], start_ts: strata_storage::HlcTimestamp) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + key.len() + 12);
+    k.push(b'e');
+    k.extend_from_slice(key);
+    k.extend_from_slice(&start_ts.physical.to_be_bytes());
+    k.extend_from_slice(&start_ts.logical.to_be_bytes());
+    k
+}
+
+pub fn commit_key(key: &[u8], start_ts: strata_storage::HlcTimestamp) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + key.len() + 12);
+    k.push(b'c');
+    k.extend_from_slice(key);
+    k.extend_from_slice(&start_ts.physical.to_be_bytes());
+    k.extend_from_slice(&start_ts.logical.to_be_bytes());
+    k
+}
+
+pub fn rollback_key(key: &[u8], start_ts: strata_storage::HlcTimestamp) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + key.len() + 12);
+    k.push(b'r');
+    k.extend_from_slice(key);
+    k.extend_from_slice(&start_ts.physical.to_be_bytes());
+    k.extend_from_slice(&start_ts.logical.to_be_bytes());
+    k
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ShardCommand {
     Put {
@@ -244,6 +308,23 @@ pub enum ShardCommand {
     },
     Merge {
         target_shard_id: ShardId,
+    },
+    TxnPrewrite {
+        key: Vec<u8>,
+        value: Option<Vec<u8>>,
+        primary: Vec<u8>,
+        start_ts: strata_storage::HlcTimestamp,
+        ttl: u64,
+    },
+    TxnCommit {
+        key: Vec<u8>,
+        start_ts: strata_storage::HlcTimestamp,
+        commit_ts: strata_storage::HlcTimestamp,
+        is_primary: bool,
+    },
+    TxnRollback {
+        key: Vec<u8>,
+        start_ts: strata_storage::HlcTimestamp,
     },
 }
 
@@ -388,6 +469,88 @@ impl StateMachine for ShardStateMachine {
                     let bytes = bincode::serialize(&merge_data).unwrap();
                     std::fs::write(merge_file, bytes).unwrap();
 
+                    Ok(Vec::new())
+                }
+                ShardCommand::TxnPrewrite { key, value, primary, start_ts, ttl } => {
+                    use strata_storage::Storage;
+                    
+                    // 1. Write-Write conflict check
+                    let wk = write_key(&key);
+                    if let Ok(Some(write_bytes)) = storage.get(&wk, strata_storage::HlcTimestamp { physical: u64::MAX, logical: u32::MAX }) {
+                        if let Ok((_w_start, w_commit)) = bincode::deserialize::<(strata_storage::HlcTimestamp, strata_storage::HlcTimestamp)>(&write_bytes) {
+                            if w_commit >= start_ts {
+                                let ek = error_key(&key, start_ts);
+                                let err_bytes = bincode::serialize(&PrewriteError::WriteConflict(w_commit)).unwrap();
+                                let _ = storage.put(&ek, &err_bytes, start_ts);
+                                return Ok(Vec::new());
+                            }
+                        }
+                    }
+
+                    // 2. Lock conflict check
+                    let lk = lock_key(&key);
+                    if let Ok(Some(lock_bytes)) = storage.get(&lk, strata_storage::HlcTimestamp { physical: u64::MAX, logical: u32::MAX }) {
+                        if let Ok(lock_info) = bincode::deserialize::<LockInfo>(&lock_bytes) {
+                            let ek = error_key(&key, start_ts);
+                            let err_bytes = bincode::serialize(&PrewriteError::LockConflict {
+                                primary: lock_info.primary.clone(),
+                                ts: lock_info.ts,
+                            }).unwrap();
+                            let _ = storage.put(&ek, &err_bytes, start_ts);
+                            return Ok(Vec::new());
+                        }
+                    }
+
+                    // 3. Write Lock
+                    let lock_info = LockInfo {
+                        primary,
+                        ts: start_ts,
+                        ttl,
+                    };
+                    let lock_bytes = bincode::serialize(&lock_info).unwrap();
+                    storage.put(&lk, &lock_bytes, start_ts).map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
+
+                    // 4. Write Data
+                    let dk = data_key(&key);
+                    let val_bytes = bincode::serialize(&value).unwrap();
+                    storage.put(&dk, &val_bytes, start_ts).map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
+
+                    Ok(Vec::new())
+                }
+                ShardCommand::TxnCommit { key, start_ts, commit_ts, is_primary } => {
+                    use strata_storage::Storage;
+                    let lk = lock_key(&key);
+                    if let Ok(Some(lock_bytes)) = storage.get(&lk, strata_storage::HlcTimestamp { physical: u64::MAX, logical: u32::MAX }) {
+                        if let Ok(lock_info) = bincode::deserialize::<LockInfo>(&lock_bytes) {
+                            if lock_info.ts == start_ts {
+                                storage.delete(&lk, commit_ts).map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
+                                
+                                let wk = write_key(&key);
+                                let val = bincode::serialize(&(start_ts, commit_ts)).unwrap();
+                                storage.put(&wk, &val, commit_ts).map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
+
+                                if is_primary {
+                                    let ck = commit_key(&key, start_ts);
+                                    let ck_val = bincode::serialize(&commit_ts).unwrap();
+                                    storage.put(&ck, &ck_val, commit_ts).map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
+                                }
+                            }
+                        }
+                    }
+                    Ok(Vec::new())
+                }
+                ShardCommand::TxnRollback { key, start_ts } => {
+                    use strata_storage::Storage;
+                    let lk = lock_key(&key);
+                    if let Ok(Some(lock_bytes)) = storage.get(&lk, strata_storage::HlcTimestamp { physical: u64::MAX, logical: u32::MAX }) {
+                        if let Ok(lock_info) = bincode::deserialize::<LockInfo>(&lock_bytes) {
+                            if lock_info.ts == start_ts {
+                                storage.delete(&lk, start_ts).map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
+                            }
+                        }
+                    }
+                    let rk = rollback_key(&key, start_ts);
+                    storage.put(&rk, &[], start_ts).map_err(|e| StateMachineError::ApplyFailed(e.to_string()))?;
                     Ok(Vec::new())
                 }
             }

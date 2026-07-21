@@ -5,3 +5,9 @@ edition = "2021"
 
 [dependencies]
 serde = { workspace = true }
+bincode = { workspace = true }
+rand = { workspace = true }
+strata-simd = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
