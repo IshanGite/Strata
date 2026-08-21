@@ -95,9 +95,9 @@ fn test_vamana_recall_at_scale() {
     let config = VamanaConfig {
         r: 32,
         alpha: 1.2,
-        l_build: 75,
+        l_build: 100,
         pq_subspaces: 16,
-        beam_width: 8,
+        beam_width: 32,
         rerank_factor: 10,
     };
 

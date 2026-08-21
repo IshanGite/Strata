@@ -4,12 +4,25 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+parking_lot = "0.12"
+async-trait = "0.1"
+roaring = { workspace = true }
+
 strata-storage = { workspace = true }
 strata-consensus = { workspace = true }
 strata-sharding = { workspace = true }
 strata-index = { workspace = true }
 strata-txn = { workspace = true }
-strata-net = { workspace = true }
 strata-planner = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
+strata-net = { workspace = true }
+strata-runtime = { version = "0.1.0", path = "../strata-runtime" }
+
+[dev-dependencies]
+tempfile = "3"
+strata-client = { workspace = true }
+strata-simd = { workspace = true }

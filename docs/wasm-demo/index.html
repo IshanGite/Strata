@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strata WASM Client Demo</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
+        .panel { border: 1px solid #ccc; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; }
+        .output { background: #f5f5f5; padding: 1rem; border-radius: 4px; min-height: 50px; font-family: monospace; white-space: pre-wrap; }
+        input, button { margin: 0.5rem 0; padding: 0.5rem; }
+        button { background: #0066cc; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0052a3; }
+    </style>
+</head>
+<body>
+    <h1>Strata Database WASM Client Demo</h1>
+    <p>This demo connects to a Strata gRPC-Web endpoint directly from the browser using WASM.</p>
+    
+    <div>
+        <label>Server URL:</label>
+        <input type="text" id="url" value="http://localhost:8080" />
+    </div>
+
+    <div class="panel">
+        <h2>Put</h2>
+        <input type="text" id="put-key" placeholder="Key" />
+        <input type="text" id="put-val" placeholder="Value" />
+        <button id="btn-put">Put</button>
+    </div>
+
+    <div class="panel">
+        <h2>Get</h2>
+        <input type="text" id="get-key" placeholder="Key" />
+        <button id="btn-get">Get</button>
+    </div>
+
+    <div class="panel">
+        <h2>Search KNN</h2>
+        <input type="text" id="knn-vec" placeholder="Vector (comma separated floats)" value="1.0, 2.0" />
+        <input type="number" id="knn-k" placeholder="K" value="10" />
+        <button id="btn-knn">Search</button>
+    </div>
+
+    <h3>Output</h3>
+    <div id="output" class="output">Ready.</div>
+
+    <script type="module">
+        import init, { WasmStrataClient } from './pkg/strata_wasm.js';
+
+        const output = document.getElementById('output');
+        const log = (msg) => {
+            output.textContent = typeof msg === 'object' ? JSON.stringify(msg, null, 2) : msg;
+        };
+
+        const enc = new TextEncoder();
+        const dec = new TextDecoder();
+
+        async function run() {
+            try {
+                await init();
+                log("WASM module loaded successfully.");
+            } catch (e) {
+                log("Failed to load WASM module: " + e);
+                return;
+            }
+
+            const getClient = () => {
+                const url = document.getElementById('url').value;
+                return new WasmStrataClient(url);
+            };
+
+            document.getElementById('btn-put').onclick = async () => {
+                const key = document.getElementById('put-key').value;
+                const val = document.getElementById('put-val').value;
+                try {
+                    let client = getClient();
+                    let res = await client.put(enc.encode(key), enc.encode(val));
+                    log(res);
+                } catch (e) {
+                    log("Error: " + e);
+                }
+            };
+
+            document.getElementById('btn-get').onclick = async () => {
+                const key = document.getElementById('get-key').value;
+                try {
+                    let client = getClient();
+                    let res = await client.get(enc.encode(key));
+                    if (res.found && res.value) {
+                        res.value_str = dec.decode(res.value);
+                    }
+                    log(res);
+                } catch (e) {
+                    log("Error: " + e);
+                }
+            };
+
+            document.getElementById('btn-knn').onclick = async () => {
+                const vecStr = document.getElementById('knn-vec').value;
+                const vec = Float32Array.from(vecStr.split(',').map(s => parseFloat(s.trim())));
+                const k = parseInt(document.getElementById('knn-k').value);
+                try {
+                    let client = getClient();
+                    let res = await client.searchKnn(vec, k);
+                    log(res);
+                } catch (e) {
+                    log("Error: " + e);
+                }
+            };
+        }
+
+        run();
+    </script>
+</body>
+</html>

@@ -4,7 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tokio = { workspace = true }
+tonic = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+parking_lot = "0.12"
+async-trait = "0.1"
+roaring = { workspace = true }
+
 strata-net = { workspace = true }
+strata-sharding = { workspace = true }
 strata-storage = { workspace = true }
 strata-txn = { workspace = true }
-serde = { workspace = true }

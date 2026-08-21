@@ -8,4 +8,10 @@ strata-storage = { workspace = true }
 strata-index = { workspace = true }
 strata-sharding = { workspace = true }
 strata-txn = { workspace = true }
+strata-simd = { workspace = true }
 serde = { workspace = true }
+roaring = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

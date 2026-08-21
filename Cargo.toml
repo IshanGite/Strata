@@ -11,7 +11,7 @@ members = [
     "strata-client",
     "strata-server",
     "strata-bench",
-    "strata-fuzz",
+    "strata-fuzz", "strata-wasm", "strata-runtime",
 ]
 resolver = "2"
 
@@ -19,6 +19,7 @@ resolver = "2"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tonic = "0.12"
+tonic-build = "0.12"
 prost = "0.13"
 quinn = "0.11"
 proptest = "1"

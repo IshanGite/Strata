@@ -278,6 +278,135 @@ impl HnswIndex {
         v.truncate(k);
         v
     }
+
+    pub(crate) fn score_and_filter_bitmap(
+        &self,
+        query: &[f32],
+        ids: &[u64],
+        k: usize,
+        filter: &roaring::RoaringBitmap,
+    ) -> Vec<(u64, f32)> {
+        let mut v: Vec<(u64, f32)> = ids
+            .iter()
+            .filter(|id| !self.tombstones.contains(id) && filter.contains(**id as u32))
+            .filter_map(|&id| {
+                self.nodes
+                    .get(&id)
+                    .map(|n| (id, l2_distance(query, &n.vector)))
+            })
+            .collect();
+        v.sort_by(|a, b| a.1.total_cmp(&b.1));
+        v.truncate(k);
+        v
+    }
+
+    pub(crate) fn search_layer_filtered(
+        &self,
+        query: &[f32],
+        entry_points: &[u64],
+        ef: usize,
+        layer: usize,
+        filter: &roaring::RoaringBitmap,
+    ) -> Vec<u64> {
+        let mut candidates: BinaryHeap<Reverse<DistId>> = BinaryHeap::new();
+        let mut result: BinaryHeap<DistId> = BinaryHeap::new();
+        let mut visited: HashSet<u64> = HashSet::new();
+
+        for &ep in entry_points {
+            if self.tombstones.contains(&ep) {
+                continue;
+            }
+            if let Some(node) = self.nodes.get(&ep) {
+                let d = l2_distance(query, &node.vector);
+                let did = DistId { dist: d, id: ep };
+                candidates.push(Reverse(did));
+                if filter.contains(ep as u32) {
+                    result.push(did);
+                }
+                visited.insert(ep);
+            }
+        }
+
+        while let Some(Reverse(c)) = candidates.pop() {
+            let worst = result.peek().map_or(f32::MAX, |w| w.dist);
+            if c.dist > worst && result.len() >= ef {
+                break;
+            }
+
+            let layer_map = match self.layers.get(layer) {
+                Some(m) => m,
+                None => continue,
+            };
+            if let Some(neighbours) = layer_map.get(&c.id) {
+                for &nb_id in neighbours {
+                    if visited.contains(&nb_id) || self.tombstones.contains(&nb_id) {
+                        continue;
+                    }
+                    visited.insert(nb_id);
+                    if let Some(nb_node) = self.nodes.get(&nb_id) {
+                        let nb_d = l2_distance(query, &nb_node.vector);
+                        let worst = result.peek().map_or(f32::MAX, |w| w.dist);
+                        let matches_filter = filter.contains(nb_id as u32);
+                        if matches_filter && (nb_d < worst || result.len() < ef) {
+                            result.push(DistId {
+                                dist: nb_d,
+                                id: nb_id,
+                            });
+                            if result.len() > ef {
+                                result.pop();
+                            }
+                        }
+                        if nb_d < worst || result.len() < ef {
+                            candidates.push(Reverse(DistId {
+                                dist: nb_d,
+                                id: nb_id,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut out: Vec<(f32, u64)> = result.into_iter().map(|d| (d.dist, d.id)).collect();
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out.into_iter().map(|(_, id)| id).collect()
+    }
+
+    pub fn search_knn_filtered(
+        &self,
+        query: &[f32],
+        k: usize,
+        filter: &roaring::RoaringBitmap,
+    ) -> Result<Vec<(u64, f32)>, IndexError> {
+        if query.len() != self.dim {
+            return Err(IndexError::DimensionMismatch {
+                expected: self.dim,
+                actual: query.len(),
+            });
+        }
+        if filter.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let ep = match self.entry_point {
+            Some(ep) => ep,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut ep_list = vec![ep];
+        for lc in (1..=self.entry_layer).rev() {
+            let w = self.search_layer(query, &ep_list, 1, lc);
+            if !w.is_empty() {
+                ep_list = vec![w[0]];
+            }
+        }
+
+        let ef = self.config.ef_search.max(k * 2);
+        let w = self.search_layer_filtered(query, &ep_list, ef, 0, filter);
+        let mut results = self.score_and_filter_bitmap(query, &w, k, filter);
+        results.truncate(k);
+        Ok(results)
+    }
 }
 
 // ── AnnIndex impl ─────────────────────────────────────────────────────────────

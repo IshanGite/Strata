@@ -7,6 +7,7 @@ edition = "2021"
 serde = { workspace = true }
 bincode = { workspace = true }
 rand = { workspace = true }
+roaring = { workspace = true }
 strata-simd = { workspace = true }
 
 [dev-dependencies]

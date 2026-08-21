@@ -3,11 +3,11 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 pub use strata_storage::HlcTimestamp;
 
+use strata_consensus::{RaftTransport, Role};
 use strata_sharding::{
-    lock_key, data_key, write_key, error_key, commit_key,
-    LockInfo, PrewriteError, ShardCommand, MultiRaftNode, RoutingTable, ShardRouter,
+    commit_key, data_key, error_key, lock_key, write_key, LockInfo, MultiRaftNode, PrewriteError,
+    RoutingTable, ShardCommand, ShardRouter,
 };
-use strata_consensus::Role;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Mutation {
@@ -133,17 +133,30 @@ impl Hlc {
     }
 }
 
-pub struct DistributedTxnCoordinator {
+pub struct DistributedTxnCoordinator<
+    T: RaftTransport + 'static = strata_sharding::MultiRaftTransport,
+> {
     pub hlc: std::sync::Arc<Hlc>,
-    pub node_servers: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<strata_consensus::NodeId, std::sync::Arc<MultiRaftNode>>>>,
+    pub node_servers: std::sync::Arc<
+        parking_lot::Mutex<
+            std::collections::HashMap<strata_consensus::NodeId, std::sync::Arc<MultiRaftNode<T>>>,
+        >,
+    >,
     pub table: std::sync::Arc<parking_lot::Mutex<RoutingTable>>,
     pub active_txns: parking_lot::Mutex<std::collections::HashMap<HlcTimestamp, Vec<Vec<u8>>>>,
 }
 
-impl DistributedTxnCoordinator {
+impl<T: RaftTransport + 'static> DistributedTxnCoordinator<T> {
     pub fn new(
         hlc: std::sync::Arc<Hlc>,
-        node_servers: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<strata_consensus::NodeId, std::sync::Arc<MultiRaftNode>>>>,
+        node_servers: std::sync::Arc<
+            parking_lot::Mutex<
+                std::collections::HashMap<
+                    strata_consensus::NodeId,
+                    std::sync::Arc<MultiRaftNode<T>>,
+                >,
+            >,
+        >,
         table: std::sync::Arc<parking_lot::Mutex<RoutingTable>>,
     ) -> Self {
         Self {
@@ -154,10 +167,16 @@ impl DistributedTxnCoordinator {
         }
     }
 
-    fn get_leader_node(&self, shard_id: strata_sharding::ShardId) -> Result<std::sync::Arc<strata_sharding::ShardNode>, TxnError> {
+    fn get_leader_node(
+        &self,
+        shard_id: strata_sharding::ShardId,
+    ) -> Result<std::sync::Arc<strata_sharding::ShardNode<T>>, TxnError> {
         let raft_group = self.table.lock().raft_group_for_shard(shard_id);
         if raft_group.is_empty() {
-            return Err(TxnError::Other(format!("No raft group for shard {:?}", shard_id)));
+            return Err(TxnError::Other(format!(
+                "No raft group for shard {:?}",
+                shard_id
+            )));
         }
         let servers = self.node_servers.lock();
         for &node_id in &raft_group {
@@ -170,12 +189,15 @@ impl DistributedTxnCoordinator {
                 }
             }
         }
-        Err(TxnError::Other(format!("No leader found for shard {:?}", shard_id)))
+        Err(TxnError::Other(format!(
+            "No leader found for shard {:?}",
+            shard_id
+        )))
     }
 
     pub async fn propose_command(&self, key: &[u8], cmd: ShardCommand) -> Result<(), TxnError> {
         let shard_id = self.table.lock().shard_for_key(key);
-        
+
         let mut retries = 0;
         let shard_node = loop {
             match self.get_leader_node(shard_id) {
@@ -205,7 +227,9 @@ impl DistributedTxnCoordinator {
                 break;
             }
             if apply_retries >= 200 {
-                return Err(TxnError::Other("Timeout waiting for proposal to be applied".to_string()));
+                return Err(TxnError::Other(
+                    "Timeout waiting for proposal to be applied".to_string(),
+                ));
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             apply_retries += 1;
@@ -213,14 +237,21 @@ impl DistributedTxnCoordinator {
         Ok(())
     }
 
-    pub fn get_storage(&self, key: &[u8]) -> Result<std::sync::Arc<parking_lot::Mutex<Option<strata_storage::LsmStorage>>>, TxnError> {
+    pub fn get_storage(
+        &self,
+        key: &[u8],
+    ) -> Result<std::sync::Arc<parking_lot::Mutex<Option<strata_storage::LsmStorage>>>, TxnError>
+    {
         let shard_id = self.table.lock().shard_for_key(key);
         let raft_group = self.table.lock().raft_group_for_shard(shard_id);
         if raft_group.is_empty() {
-            return Err(TxnError::Other(format!("No raft group for shard {:?}", shard_id)));
+            return Err(TxnError::Other(format!(
+                "No raft group for shard {:?}",
+                shard_id
+            )));
         }
         let servers = self.node_servers.lock();
-        
+
         // Try leader first
         for &node_id in &raft_group {
             if let Some(server) = servers.get(&node_id) {
@@ -235,7 +266,7 @@ impl DistributedTxnCoordinator {
                 }
             }
         }
-        
+
         // Fallback to any node with initialized storage
         for &node_id in &raft_group {
             if let Some(server) = servers.get(&node_id) {
@@ -249,10 +280,18 @@ impl DistributedTxnCoordinator {
                 }
             }
         }
-        Err(TxnError::Other(format!("No storage found for shard {:?}", shard_id)))
+        Err(TxnError::Other(format!(
+            "No storage found for shard {:?}",
+            shard_id
+        )))
     }
 
-    fn storage_get(&self, key: &[u8], query_key: &[u8], as_of: HlcTimestamp) -> Result<Option<Vec<u8>>, TxnError> {
+    fn storage_get(
+        &self,
+        key: &[u8],
+        query_key: &[u8],
+        as_of: HlcTimestamp,
+    ) -> Result<Option<Vec<u8>>, TxnError> {
         let storage_arc = self.get_storage(key)?;
         let guard = storage_arc.lock();
         if let Some(ref storage) = *guard {
@@ -264,9 +303,12 @@ impl DistributedTxnCoordinator {
     }
 
     pub async fn get(&self, key: &[u8], as_of: HlcTimestamp) -> Result<Option<Vec<u8>>, TxnError> {
-        let max_ts = HlcTimestamp { physical: u64::MAX, logical: u32::MAX };
+        let max_ts = HlcTimestamp {
+            physical: u64::MAX,
+            logical: u32::MAX,
+        };
         let lk = lock_key(key);
-        
+
         loop {
             let lock_opt = self.storage_get(key, &lk, max_ts)?;
             if let Some(lock_bytes) = lock_opt {
@@ -278,7 +320,9 @@ impl DistributedTxnCoordinator {
                             let ck = commit_key(&lock_info.primary, lock_info.ts);
                             let commit_opt = self.storage_get(&lock_info.primary, &ck, max_ts)?;
                             if let Some(commit_bytes) = commit_opt {
-                                if let Ok(commit_ts) = bincode::deserialize::<HlcTimestamp>(&commit_bytes) {
+                                if let Ok(commit_ts) =
+                                    bincode::deserialize::<HlcTimestamp>(&commit_bytes)
+                                {
                                     // Primary committed! Roll secondary forward.
                                     let commit_cmd = ShardCommand::TxnCommit {
                                         key: key.to_vec(),
@@ -299,7 +343,9 @@ impl DistributedTxnCoordinator {
                                 key: key.to_vec(),
                                 start_ts: lock_info.ts,
                             };
-                            let _ = self.propose_command(&lock_info.primary, rollback_primary).await;
+                            let _ = self
+                                .propose_command(&lock_info.primary, rollback_primary)
+                                .await;
                             let _ = self.propose_command(key, rollback_secondary).await;
                             continue;
                         } else {
@@ -316,7 +362,9 @@ impl DistributedTxnCoordinator {
         let wk = write_key(key);
         let write_opt = self.storage_get(key, &wk, as_of)?;
         if let Some(write_bytes) = write_opt {
-            if let Ok((start_ts, _commit_ts)) = bincode::deserialize::<(HlcTimestamp, HlcTimestamp)>(&write_bytes) {
+            if let Ok((start_ts, _commit_ts)) =
+                bincode::deserialize::<(HlcTimestamp, HlcTimestamp)>(&write_bytes)
+            {
                 let dk = data_key(key);
                 let data_opt = self.storage_get(key, &dk, start_ts)?;
                 if let Some(data_bytes) = data_opt {
@@ -330,14 +378,28 @@ impl DistributedTxnCoordinator {
     }
 
     pub fn read_sync(&self, key: &[u8], as_of: HlcTimestamp) -> Result<Option<Vec<u8>>, TxnError> {
-        tokio::task::block_in_place(|| {
-            futures::executor::block_on(self.get(key, as_of))
-        })
+        tokio::task::block_in_place(|| futures::executor::block_on(self.get(key, as_of)))
     }
 
-    pub async fn prewrite_async(&self, txn_ts: HlcTimestamp, mutations: &[Mutation]) -> Result<(), TxnError> {
+    pub async fn prewrite_async(
+        &self,
+        txn_ts: HlcTimestamp,
+        mutations: &[Mutation],
+    ) -> Result<(), TxnError> {
         if mutations.is_empty() {
             return Ok(());
+        }
+
+        {
+            let mut active = self.active_txns.lock();
+            let keys: Vec<Vec<u8>> = mutations
+                .iter()
+                .map(|m| match m {
+                    Mutation::Put(k, _) => k.clone(),
+                    Mutation::Delete(k) => k.clone(),
+                })
+                .collect();
+            active.insert(txn_ts, keys);
         }
 
         let primary_mutation = &mutations[0];
@@ -347,11 +409,15 @@ impl DistributedTxnCoordinator {
         };
 
         // Prewrite primary first
-        self.prewrite_mutation(txn_ts, primary_mutation, primary_key.clone(), 1000).await?;
+        self.prewrite_mutation(txn_ts, primary_mutation, primary_key.clone(), 1000)
+            .await?;
 
         // Prewrite secondaries
         for mutation in &mutations[1..] {
-            if let Err(e) = self.prewrite_mutation(txn_ts, mutation, primary_key.clone(), 1000).await {
+            if let Err(e) = self
+                .prewrite_mutation(txn_ts, mutation, primary_key.clone(), 1000)
+                .await
+            {
                 let _ = self.abort_async(txn_ts, mutations).await;
                 return Err(e);
             }
@@ -360,7 +426,13 @@ impl DistributedTxnCoordinator {
         Ok(())
     }
 
-    async fn prewrite_mutation(&self, txn_ts: HlcTimestamp, mutation: &Mutation, primary: Vec<u8>, ttl: u64) -> Result<(), TxnError> {
+    async fn prewrite_mutation(
+        &self,
+        txn_ts: HlcTimestamp,
+        mutation: &Mutation,
+        primary: Vec<u8>,
+        ttl: u64,
+    ) -> Result<(), TxnError> {
         let (key, value) = match mutation {
             Mutation::Put(k, v) => (k.clone(), Some(v.clone())),
             Mutation::Delete(k) => (k.clone(), None),
@@ -378,8 +450,11 @@ impl DistributedTxnCoordinator {
 
         // Verify prewrite status
         let lk = lock_key(&key);
-        let max_ts = HlcTimestamp { physical: u64::MAX, logical: u32::MAX };
-        
+        let max_ts = HlcTimestamp {
+            physical: u64::MAX,
+            logical: u32::MAX,
+        };
+
         let lock_opt = self.storage_get(&key, &lk, max_ts)?;
         if let Some(lock_bytes) = lock_opt {
             if let Ok(lock_info) = bincode::deserialize::<LockInfo>(&lock_bytes) {
@@ -394,8 +469,15 @@ impl DistributedTxnCoordinator {
         if let Some(err_bytes) = err_opt {
             if let Ok(err) = bincode::deserialize::<PrewriteError>(&err_bytes) {
                 return match err {
-                    PrewriteError::WriteConflict(ts) => Err(TxnError::WriteConflict { key, conflict_ts: ts }),
-                    PrewriteError::LockConflict { primary, ts } => Err(TxnError::LockConflict { key, primary, lock_ts: ts }),
+                    PrewriteError::WriteConflict(ts) => Err(TxnError::WriteConflict {
+                        key,
+                        conflict_ts: ts,
+                    }),
+                    PrewriteError::LockConflict { primary, ts } => Err(TxnError::LockConflict {
+                        key,
+                        primary,
+                        lock_ts: ts,
+                    }),
                 };
             }
         }
@@ -403,7 +485,11 @@ impl DistributedTxnCoordinator {
         Err(TxnError::Aborted)
     }
 
-    pub async fn commit_async(&self, txn_ts: HlcTimestamp, commit_ts: HlcTimestamp) -> Result<(), TxnError> {
+    pub async fn commit_async(
+        &self,
+        txn_ts: HlcTimestamp,
+        commit_ts: HlcTimestamp,
+    ) -> Result<(), TxnError> {
         let keys = {
             let guard = self.active_txns.lock();
             guard.get(&txn_ts).cloned()
@@ -411,7 +497,11 @@ impl DistributedTxnCoordinator {
 
         let keys = match keys {
             Some(k) if !k.is_empty() => k,
-            _ => return Err(TxnError::Other("Transaction not found or has no mutations".to_string())),
+            _ => {
+                return Err(TxnError::Other(
+                    "Transaction not found or has no mutations".to_string(),
+                ))
+            }
         };
 
         let primary_key = &keys[0];
@@ -427,7 +517,10 @@ impl DistributedTxnCoordinator {
 
         // Verify primary committed successfully
         let ck = commit_key(primary_key, txn_ts);
-        let max_ts = HlcTimestamp { physical: u64::MAX, logical: u32::MAX };
+        let max_ts = HlcTimestamp {
+            physical: u64::MAX,
+            logical: u32::MAX,
+        };
         let commit_opt = self.storage_get(primary_key, &ck, max_ts)?;
         if commit_opt.is_none() {
             return Err(TxnError::Aborted);
@@ -450,16 +543,23 @@ impl DistributedTxnCoordinator {
         Ok(())
     }
 
-    pub async fn abort_async(&self, txn_ts: HlcTimestamp, mutations: &[Mutation]) -> Result<(), TxnError> {
+    pub async fn abort_async(
+        &self,
+        txn_ts: HlcTimestamp,
+        mutations: &[Mutation],
+    ) -> Result<(), TxnError> {
         let keys = {
             let mut guard = self.active_txns.lock();
             if let Some(k) = guard.remove(&txn_ts) {
                 k
             } else {
-                mutations.iter().map(|m| match m {
-                    Mutation::Put(k, _) => k.clone(),
-                    Mutation::Delete(k) => k.clone(),
-                }).collect()
+                mutations
+                    .iter()
+                    .map(|m| match m {
+                        Mutation::Put(k, _) => k.clone(),
+                        Mutation::Delete(k) => k.clone(),
+                    })
+                    .collect()
             }
         };
 
@@ -474,7 +574,7 @@ impl DistributedTxnCoordinator {
     }
 }
 
-impl TransactionCoordinator for DistributedTxnCoordinator {
+impl<T: RaftTransport + 'static> TransactionCoordinator for DistributedTxnCoordinator<T> {
     fn begin(&self) -> HlcTimestamp {
         self.hlc.local_event()
     }
@@ -482,10 +582,13 @@ impl TransactionCoordinator for DistributedTxnCoordinator {
     fn prewrite(&self, txn_ts: HlcTimestamp, mutations: &[Mutation]) -> Result<(), TxnError> {
         {
             let mut active = self.active_txns.lock();
-            let keys: Vec<Vec<u8>> = mutations.iter().map(|m| match m {
-                Mutation::Put(k, _) => k.clone(),
-                Mutation::Delete(k) => k.clone(),
-            }).collect();
+            let keys: Vec<Vec<u8>> = mutations
+                .iter()
+                .map(|m| match m {
+                    Mutation::Put(k, _) => k.clone(),
+                    Mutation::Delete(k) => k.clone(),
+                })
+                .collect();
             active.insert(txn_ts, keys);
         }
 
@@ -501,10 +604,6 @@ impl TransactionCoordinator for DistributedTxnCoordinator {
     }
 
     fn abort(&self, txn_ts: HlcTimestamp) -> Result<(), TxnError> {
-        tokio::task::block_in_place(|| {
-            futures::executor::block_on(self.abort_async(txn_ts, &[]))
-        })
+        tokio::task::block_in_place(|| futures::executor::block_on(self.abort_async(txn_ts, &[])))
     }
 }
-
-

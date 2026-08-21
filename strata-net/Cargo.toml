@@ -9,3 +9,18 @@ tonic = { workspace = true }
 prost = { workspace = true }
 quinn = { workspace = true }
 serde = { workspace = true }
+bincode = { workspace = true }
+parking_lot = "0.12"
+async-trait = "0.1"
+roaring = { workspace = true }
+
+strata-storage = { workspace = true }
+strata-consensus = { workspace = true }
+strata-sharding = { workspace = true }
+strata-txn = { workspace = true }
+strata-planner = { workspace = true }
+strata-index = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+protobuf-src = "1"

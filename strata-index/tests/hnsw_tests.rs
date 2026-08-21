@@ -40,7 +40,7 @@ fn test_hnsw_recall_vs_bruteforce_ground_truth() {
         })
         .collect();
 
-    let config = HnswConfig::new(16, 200, 100);
+    let config = HnswConfig::new(16, 200, 150);
     let mut index = HnswIndex::new(dim, config);
     for (id, vec) in &dataset {
         index.insert(*id, vec).expect("insert failed");

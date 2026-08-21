@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use strata_consensus::NodeId;
 use strata_sharding::{
-    ChaosNetwork, MultiRaftNode, MultiRaftTransport, RangeRoute, RoutingTable, ShardId, lock_key,
+    lock_key, ChaosNetwork, MultiRaftNode, MultiRaftTransport, RangeRoute, RoutingTable, ShardId,
 };
-use strata_txn::{DistributedTxnCoordinator, Hlc, HlcTimestamp, Mutation, TransactionCoordinator, TxnError};
 use strata_storage::Storage;
+use strata_txn::{
+    DistributedTxnCoordinator, Hlc, HlcTimestamp, Mutation, TransactionCoordinator, TxnError,
+};
 use tempfile::TempDir;
 
 // 1. test_hlc_causality — events with a happens-before relationship get
@@ -15,11 +17,19 @@ use tempfile::TempDir;
 fn test_hlc_causality() {
     let clock1_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(10));
     let c1 = clock1_time.clone();
-    let hlc1 = Hlc::new_with_clock(0, 0, Box::new(move || c1.load(std::sync::atomic::Ordering::SeqCst)));
+    let hlc1 = Hlc::new_with_clock(
+        0,
+        0,
+        Box::new(move || c1.load(std::sync::atomic::Ordering::SeqCst)),
+    );
 
     let clock2_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(8)); // Clock drift backward!
     let c2 = clock2_time.clone();
-    let hlc2 = Hlc::new_with_clock(0, 0, Box::new(move || c2.load(std::sync::atomic::Ordering::SeqCst)));
+    let hlc2 = Hlc::new_with_clock(
+        0,
+        0,
+        Box::new(move || c2.load(std::sync::atomic::Ordering::SeqCst)),
+    );
 
     // Event 1 on node 1
     let ts1 = hlc1.local_event();
@@ -93,7 +103,7 @@ async fn test_cross_shard_txn_atomic_commit() {
     for &id in &node_ids {
         let server = servers.get(&id).unwrap();
         *server.table.lock() = table.clone();
-        
+
         let peers: Vec<NodeId> = vec![1, 2, 3].into_iter().filter(|&p| p != id).collect();
         server.start_shard(ShardId(1), peers.clone());
         server.start_shard(ShardId(2), peers.clone());
@@ -182,19 +192,17 @@ async fn test_write_write_conflict_detected() {
     }
 
     let mut table = RoutingTable::new();
-    table.routes = vec![
-        RangeRoute {
-            start_key: b"a".to_vec(),
-            end_key: b"z".to_vec(),
-            shard_id: ShardId(1),
-            raft_group: vec![1, 2, 3],
-        },
-    ];
+    table.routes = vec![RangeRoute {
+        start_key: b"a".to_vec(),
+        end_key: b"z".to_vec(),
+        shard_id: ShardId(1),
+        raft_group: vec![1, 2, 3],
+    }];
 
     for &id in &node_ids {
         let server = servers.get(&id).unwrap();
         *server.table.lock() = table.clone();
-        
+
         let peers: Vec<NodeId> = vec![1, 2, 3].into_iter().filter(|&p| p != id).collect();
         server.start_shard(ShardId(1), peers);
     }
@@ -272,19 +280,17 @@ async fn test_read_encounters_lock_resolves_correctly() {
     }
 
     let mut table = RoutingTable::new();
-    table.routes = vec![
-        RangeRoute {
-            start_key: b"a".to_vec(),
-            end_key: b"z".to_vec(),
-            shard_id: ShardId(1),
-            raft_group: vec![1, 2, 3],
-        },
-    ];
+    table.routes = vec![RangeRoute {
+        start_key: b"a".to_vec(),
+        end_key: b"z".to_vec(),
+        shard_id: ShardId(1),
+        raft_group: vec![1, 2, 3],
+    }];
 
     for &id in &node_ids {
         let server = servers.get(&id).unwrap();
         *server.table.lock() = table.clone();
-        
+
         let peers: Vec<NodeId> = vec![1, 2, 3].into_iter().filter(|&p| p != id).collect();
         server.start_shard(ShardId(1), peers);
     }
@@ -315,9 +321,7 @@ async fn test_read_encounters_lock_resolves_correctly() {
     // Spawn a reader reading as of a timestamp after start_ts1
     let reader_ts = hlc.local_event();
     let coordinator_clone = coordinator.clone();
-    let read_handle = tokio::spawn(async move {
-        coordinator_clone.get(b"apple", reader_ts).await
-    });
+    let read_handle = tokio::spawn(async move { coordinator_clone.get(b"apple", reader_ts).await });
 
     // Wait a bit, verify reader is still waiting
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -380,7 +384,7 @@ async fn test_txn_survives_coordinator_crash_mid_commit() {
     for &id in &node_ids {
         let server = servers.get(&id).unwrap();
         *server.table.lock() = table.clone();
-        
+
         let peers: Vec<NodeId> = vec![1, 2, 3].into_iter().filter(|&p| p != id).collect();
         server.start_shard(ShardId(1), peers.clone());
         server.start_shard(ShardId(2), peers);
@@ -404,7 +408,7 @@ async fn test_txn_survives_coordinator_crash_mid_commit() {
         0,
         Box::new(move || m_time.load(std::sync::atomic::Ordering::SeqCst)),
     ));
-    
+
     let node_servers = Arc::new(parking_lot::Mutex::new(servers));
     let coordinator = Arc::new(DistributedTxnCoordinator::new(
         hlc.clone(),
@@ -430,7 +434,10 @@ async fn test_txn_survives_coordinator_crash_mid_commit() {
         commit_ts,
         is_primary: true,
     };
-    coordinator.propose_command(b"apple", primary_cmd).await.unwrap();
+    coordinator
+        .propose_command(b"apple", primary_cmd)
+        .await
+        .unwrap();
 
     // Simulate coordinator crash: we do NOT commit the secondary key "lemon"!
     // Advance manual time so that the lock becomes stale
@@ -448,8 +455,18 @@ async fn test_txn_survives_coordinator_crash_mid_commit() {
 
     // Also verify that the secondary lock is physically removed now
     let lk = lock_key(b"lemon");
-    let max_ts = HlcTimestamp { physical: u64::MAX, logical: u32::MAX };
-    let lock_check = coordinator.get_storage(b"lemon").unwrap().lock().as_ref().unwrap().get(&lk, max_ts).unwrap();
+    let max_ts = HlcTimestamp {
+        physical: u64::MAX,
+        logical: u32::MAX,
+    };
+    let lock_check = coordinator
+        .get_storage(b"lemon")
+        .unwrap()
+        .lock()
+        .as_ref()
+        .unwrap()
+        .get(&lk, max_ts)
+        .unwrap();
     assert!(lock_check.is_none());
 
     ticker.abort();

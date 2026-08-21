@@ -194,6 +194,15 @@ impl HnswWithLearnedEntry {
             entry: LearnedEntryPoint::new(dim, entry_config),
         }
     }
+
+    pub fn search_knn_filtered(
+        &self,
+        query: &[f32],
+        k: usize,
+        filter: &roaring::RoaringBitmap,
+    ) -> Result<Vec<(u64, f32)>, IndexError> {
+        self.inner.search_knn_filtered(query, k, filter)
+    }
 }
 
 impl AnnIndex for HnswWithLearnedEntry {

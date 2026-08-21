@@ -5,3 +5,6 @@
 .gemini/
 .agents/
 /states/
+tla/
+**/*_TTrace_*.tla
+docs/benchmarks/raw/

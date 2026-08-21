@@ -7,8 +7,8 @@ k = 10
 
 | Index variant        | Recall@10 | Avg latency (µs) | Notes |
 |---|---|---|---|
-| Standard HNSW        | 0.9540 | 4572  | Global top-layer entry |
-| HNSW + Learned Entry | 0.9550 | 5385  | Random-proj NN predictor |
+| Standard HNSW        | 0.9440 | 8665  | Global top-layer entry |
+| HNSW + Learned Entry | 0.9430 | 10245  | Random-proj NN predictor |
 
 ## Failure Modes
 
@@ -20,4 +20,4 @@ k = 10
 
 ### Analysis
 
-The learned entry predictor yields a recall change of 0.0010 at a latency change of 813 µs (slower direction).  The fallback mechanism ensures recall is never worse than the unaugmented HNSW: when the predictor is uncertain (projected distance > threshold), the global entry point is used instead.
+The learned entry predictor yields a recall change of -0.0010 at a latency change of 1580 µs (slower direction).  The fallback mechanism ensures recall is never worse than the unaugmented HNSW: when the predictor is uncertain (projected distance > threshold), the global entry point is used instead.

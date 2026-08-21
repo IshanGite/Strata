@@ -101,27 +101,30 @@ impl Wal {
                 break;
             }
 
-            let mut record = Vec::with_capacity(21 + key_len + val_len);
-            record.extend_from_slice(&header);
-            record.extend_from_slice(&body[..key_len + val_len]);
+            let crc_stored = u32::from_le_bytes(body[key_len + val_len..].try_into().unwrap());
+            let mut crc_data = Vec::with_capacity(21 + key_len + val_len);
+            crc_data.extend_from_slice(&header);
+            crc_data.extend_from_slice(&body[0..key_len + val_len]);
 
-            let stored_crc = u32::from_le_bytes(body[key_len + val_len..].try_into().unwrap());
-            let computed_crc = crc32fast::hash(&record);
-
-            if stored_crc != computed_crc {
+            let crc_computed = crc32fast::hash(&crc_data);
+            if crc_stored != crc_computed {
                 self.file.set_len(current_offset)?;
                 break;
             }
 
-            let key = body[..key_len].to_vec();
-            let value = body[key_len..key_len + val_len].to_vec();
-            let ts = HlcTimestamp { physical, logical };
-            apply_fn(is_delete, key, value, ts);
-
+            apply_fn(
+                is_delete,
+                body[0..key_len].to_vec(),
+                body[key_len..key_len + val_len].to_vec(),
+                HlcTimestamp { physical, logical },
+            );
             current_offset += 21 + body_len as u64;
         }
 
-        self.file.seek(SeekFrom::Start(current_offset))?;
         Ok(())
+    }
+
+    pub fn size(&self) -> io::Result<u64> {
+        Ok(self.file.metadata()?.len())
     }
 }

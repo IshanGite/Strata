@@ -1,0 +1,168 @@
+syntax = "proto3";
+
+package strata;
+
+// ── Raft Consensus Service ──────────────────────────────────────────
+service RaftService {
+  rpc RequestVote (RequestVoteMessage) returns (RequestVoteResponseMessage);
+  rpc AppendEntries (AppendEntriesMessage) returns (AppendEntriesResponseMessage);
+  rpc InstallSnapshot (InstallSnapshotMessage) returns (InstallSnapshotResponseMessage);
+}
+
+message RequestVoteMessage {
+  bytes payload = 1;
+}
+
+message RequestVoteResponseMessage {
+  bytes payload = 1;
+}
+
+message AppendEntriesMessage {
+  bytes payload = 1;
+}
+
+message AppendEntriesResponseMessage {
+  bytes payload = 1;
+}
+
+message InstallSnapshotMessage {
+  bytes payload = 1;
+}
+
+message InstallSnapshotResponseMessage {
+  bytes payload = 1;
+}
+
+// ── Strata Database Client & Inter-Node Service ─────────────────────
+service StrataService {
+  rpc Put (PutRequest) returns (PutResponse);
+  rpc Get (GetRequest) returns (GetResponse);
+  rpc Delete (DeleteRequest) returns (DeleteResponse);
+  rpc BeginTxn (BeginTxnRequest) returns (BeginTxnResponse);
+  rpc PrewriteTxn (PrewriteTxnRequest) returns (PrewriteTxnResponse);
+  rpc CommitTxn (CommitTxnRequest) returns (CommitTxnResponse);
+  rpc AbortTxn (AbortTxnRequest) returns (AbortTxnResponse);
+  rpc SearchKNN (SearchKNNRequest) returns (SearchKNNResponse);
+  rpc SearchRange (SearchRangeRequest) returns (SearchRangeResponse);
+  rpc GetRoutingTable (GetRoutingTableRequest) returns (GetRoutingTableResponse);
+}
+
+message HlcTimestampProto {
+  uint64 physical = 1;
+  uint32 logical = 2;
+}
+
+message PutRequest {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message PutResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message GetRequest {
+  bytes key = 1;
+  HlcTimestampProto read_ts = 2;
+}
+
+message GetResponse {
+  bool found = 1;
+  bytes value = 2;
+  string error = 3;
+}
+
+message DeleteRequest {
+  bytes key = 1;
+}
+
+message DeleteResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message BeginTxnRequest {}
+
+message BeginTxnResponse {
+  HlcTimestampProto start_ts = 1;
+}
+
+message MutationProto {
+  enum MutationType {
+    PUT = 0;
+    DELETE = 1;
+  }
+  MutationType type = 1;
+  bytes key = 2;
+  bytes value = 3;
+}
+
+message PrewriteTxnRequest {
+  HlcTimestampProto start_ts = 1;
+  repeated MutationProto mutations = 2;
+}
+
+message PrewriteTxnResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message CommitTxnRequest {
+  HlcTimestampProto start_ts = 1;
+  HlcTimestampProto commit_ts = 2;
+  repeated MutationProto mutations = 3;
+}
+
+message CommitTxnResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message AbortTxnRequest {
+  HlcTimestampProto start_ts = 1;
+  repeated MutationProto mutations = 2;
+}
+
+message AbortTxnResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message SearchKNNRequest {
+  repeated float vector = 1;
+  uint64 k = 2;
+  optional float radius = 3;
+  bytes filter_bitmap = 4;
+}
+
+message KnnPairProto {
+  uint64 id = 1;
+  float distance = 2;
+}
+
+message SearchKNNResponse {
+  repeated KnnPairProto results = 1;
+  string error = 2;
+}
+
+message SearchRangeRequest {
+  bytes start_key = 1;
+  bytes end_key = 2;
+}
+
+message KeyValuePairProto {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message SearchRangeResponse {
+  repeated KeyValuePairProto pairs = 1;
+  string error = 2;
+}
+
+message GetRoutingTableRequest {}
+
+message GetRoutingTableResponse {
+  bytes table_bytes = 1;
+}
